@@ -371,6 +371,21 @@ export const FirestoreInvoiceService = {
    */
   syncInvoiceWithDetailsAndPdf: async (invoice, includeDetails = true, includePdf = true) => {
     try {
+      // Vérifier si la facture a une référence valide pour le PDF
+      if (includePdf && (!invoice.ref || invoice.ref.includes('(PROV)'))) {
+        console.warn(`La facture ${invoice.id} a une référence invalide ou provisoire (${invoice.ref}), impossible de récupérer son PDF`);
+        
+        // Synchroniser quand même la facture sans PDF
+        const invoiceResult = await FirestoreInvoiceService.syncInvoiceWithDetails(invoice, includeDetails);
+        return {
+          ...invoiceResult,
+          pdf: {
+            success: false,
+            error: 'Référence de facture invalide ou provisoire'
+          }
+        };
+      }
+      
       // Synchroniser la facture avec ses détails
       const invoiceResult = await FirestoreInvoiceService.syncInvoiceWithDetails(invoice, includeDetails);
       
@@ -380,6 +395,8 @@ export const FirestoreInvoiceService = {
       }
       
       try {
+        console.log(`Récupération du PDF pour la facture ${invoice.id} avec la référence ${invoice.ref}`);
+        
         // Récupérer le PDF de la facture
         const pdfData = await DolibarrService.getInvoicePdf(invoice.id);
         
@@ -395,7 +412,8 @@ export const FirestoreInvoiceService = {
             pdfUrl: pdfResult.url,
             pdfPath: pdfResult.path,
             pdfSize: pdfResult.size,
-            lastPdfSyncedAt: Date.now()
+            lastPdfSyncedAt: Date.now(),
+            ref: invoice.ref // Stocker la référence pour faciliter les recherches futures
           });
           
           return {
@@ -404,7 +422,8 @@ export const FirestoreInvoiceService = {
               success: true,
               url: pdfResult.url,
               path: pdfResult.path,
-              size: pdfResult.size
+              size: pdfResult.size,
+              ref: invoice.ref
             }
           };
         }
@@ -417,13 +436,14 @@ export const FirestoreInvoiceService = {
           }
         };
       } catch (pdfError) {
-        console.error(`Erreur lors de la synchronisation du PDF de la facture ${invoice.id}:`, pdfError);
+        console.error(`Erreur lors de la synchronisation du PDF de la facture ${invoice.id} (${invoice.ref}):`, pdfError.message);
         
         return {
           ...invoiceResult,
           pdf: {
             success: false,
-            error: pdfError.message
+            error: pdfError.message,
+            ref: invoice.ref
           }
         };
       }

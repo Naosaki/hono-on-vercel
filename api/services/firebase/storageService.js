@@ -1,5 +1,7 @@
 import { getStorage } from 'firebase-admin/storage';
 import { getFirebaseAdmin } from './adminConfig.js';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Service pour gérer les fichiers dans Firebase Storage
@@ -21,17 +23,63 @@ export const FirestoreStorageService = {
       // Définir le chemin du fichier dans Storage
       const filePath = `invoices/FA${invoiceId}.pdf`;
       
-      // Créer une référence au fichier
-      const file = bucket.file(filePath);
+      // Vérifier que pdfData est bien un Buffer
+      if (!Buffer.isBuffer(pdfData)) {
+        console.log('pdfData n\'est pas un Buffer, conversion...');
+        // Si ce n'est pas un Buffer, essayer de le convertir
+        if (typeof pdfData === 'string') {
+          // Si c'est une chaîne de caractères (peut-être base64), convertir en Buffer
+          pdfData = Buffer.from(pdfData, 'base64');
+        } else if (pdfData instanceof ArrayBuffer || pdfData instanceof Uint8Array) {
+          // Si c'est un ArrayBuffer ou Uint8Array, convertir en Buffer
+          pdfData = Buffer.from(pdfData);
+        }
+      }
       
-      // Télécharger le fichier
-      await file.save(pdfData, {
+      // Vérifier la taille du PDF pour débogage
+      console.log(`Taille du PDF pour la facture ${invoiceId}: ${pdfData.length} octets`);
+      
+      // Vérifier les premiers octets pour s'assurer qu'il s'agit bien d'un PDF (signature PDF: %PDF-)
+      const pdfSignature = '%PDF-';
+      const firstBytes = pdfData.slice(0, 5).toString('ascii');
+      
+      if (firstBytes !== pdfSignature) {
+        console.warn(`Le fichier pour la facture ${invoiceId} ne semble pas être un PDF valide. Signature: ${firstBytes}`);
+        console.warn('Premiers octets:', pdfData.slice(0, 20).toString('hex'));
+        return {
+          success: false,
+          error: 'Le fichier n\'est pas un PDF valide'
+        };
+      } else {
+        console.log(`Signature PDF valide pour la facture ${invoiceId}: ${firstBytes}`);
+      }
+      
+      // Créer un fichier temporaire pour le PDF
+      const tempDir = path.join(process.cwd(), 'temp');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+      const tempFilePath = path.join(tempDir, `FA${invoiceId}.pdf`);
+      fs.writeFileSync(tempFilePath, pdfData);
+      
+      console.log(`Fichier temporaire créé: ${tempFilePath}`);
+      
+      // Télécharger le fichier avec les options appropriées
+      await bucket.upload(tempFilePath, {
+        destination: filePath,
         metadata: {
           contentType: 'application/pdf',
+          cacheControl: 'public, max-age=31536000',
         },
+        resumable: false, // Désactiver le téléchargement reprenant pour les petits fichiers
       });
       
-      // Rendre le fichier public (optionnel, selon vos besoins)
+      // Supprimer le fichier temporaire
+      fs.unlinkSync(tempFilePath);
+      
+      // Rendre le fichier public
+      const file = bucket.file(filePath);
       await file.makePublic();
       
       // Obtenir l'URL publique du fichier

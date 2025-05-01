@@ -466,81 +466,59 @@ app.get('/sync/invoices/pdfs', async (c) => {
   try {
     console.log('Début de la synchronisation de toutes les factures avec leurs PDFs...');
     
-    // 1. Récupérer toutes les factures depuis Dolibarr
-    const invoices = await DolibarrService.getInvoices();
-    console.log(`${invoices.length} factures récupérées depuis Dolibarr`);
+    // Utiliser le service de synchronisation qui gère correctement les références de factures
+    const result = await SyncService.syncAllInvoicesWithPdf(true, true);
     
-    // 2. Synchroniser chaque facture avec son PDF
-    const results = [];
-    let successCount = 0;
-    let errorCount = 0;
-    
-    for (let i = 0; i < invoices.length; i++) {
-      const invoice = invoices[i];
-      try {
-        console.log(`Synchronisation de la facture ${invoice.id} (${i+1}/${invoices.length})...`);
-        
-        // Récupérer le PDF de la facture
-        const pdfData = await DolibarrService.getInvoicePdf(invoice.id);
-        
-        // Stocker le PDF dans Firebase Storage
-        const pdfResult = await FirestoreStorageService.uploadInvoicePdf(invoice.id, pdfData);
-        
-        // Mettre à jour la facture dans Firestore avec l'URL du PDF
-        if (pdfResult.success) {
-          const db = getFirestore();
-          const invoiceRef = db.collection('invoices').doc(invoice.id.toString());
-          
-          await invoiceRef.set({
-            pdfUrl: pdfResult.url,
-            pdfPath: pdfResult.path,
-            pdfSize: pdfResult.size,
-            lastPdfSyncedAt: Date.now()
-          }, { merge: true });
-          
-          results.push({
-            id: invoice.id,
-            ref: invoice.ref,
-            success: true,
-            url: pdfResult.url
-          });
-          
-          successCount++;
-        } else {
-          results.push({
-            id: invoice.id,
-            ref: invoice.ref,
-            success: false,
-            error: 'Erreur lors du stockage du PDF'
-          });
-          
-          errorCount++;
-        }
-      } catch (error) {
-        console.error(`Erreur lors de la synchronisation de la facture ${invoice.id}:`, error);
-        
-        results.push({
-          id: invoice.id,
-          ref: invoice.ref || `Facture ${invoice.id}`,
-          success: false,
-          error: error.message
-        });
-        
-        errorCount++;
-      }
-    }
-    
-    return c.json({
-      success: true,
-      total: invoices.length,
-      successCount,
-      errorCount,
-      results
-    });
+    return c.json(result);
   } catch (error) {
     console.error('Erreur lors de la synchronisation des factures avec PDFs:', error);
     return c.json({ 
       success: false, 
+      message: `Erreur lors de la synchronisation de la facture pdfs: ${error.message}`,
+      error: error.message 
+    }, 500);
+  }
+})
+
+// Route pour synchroniser toutes les factures avec leurs PDFs depuis Firestore
+app.get('/sync/invoices/pdfs/from-firestore', async (c) => {
+  try {
+    console.log('Début de la synchronisation des PDFs des factures depuis Firestore...');
+    
+    // Récupérer le paramètre updateDetails (par défaut à true)
+    const updateDetails = c.req.query('updateDetails') !== 'false';
+    
+    // Utiliser le service de synchronisation qui récupère les références depuis Firestore
+    const result = await SyncService.syncAllInvoicePdfsFromFirestore(updateDetails);
+    
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la synchronisation des PDFs des factures depuis Firestore:', error);
+    return c.json({ 
+      success: false, 
+      message: `Erreur lors de la synchronisation des PDFs depuis Firestore: ${error.message}`,
+      error: error.message 
+    }, 500);
+  }
+})
+
+// Route pour synchroniser toutes les factures avec leurs PDFs depuis FTP
+app.get('/sync/invoices/pdfs/from-ftp', async (c) => {
+  try {
+    console.log('Début de la synchronisation des PDFs des factures depuis FTP...');
+    
+    // Récupérer le paramètre updateDetails (par défaut à true)
+    const updateDetails = c.req.query('updateDetails') !== 'false';
+    
+    // Utiliser le service de synchronisation qui récupère les PDFs depuis FTP
+    const result = await SyncService.syncAllInvoicePdfsFromFtp(updateDetails);
+    
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la synchronisation des PDFs des factures depuis FTP:', error);
+    return c.json({ 
+      success: false, 
+      message: `Erreur lors de la synchronisation des PDFs depuis FTP: ${error.message}`,
       error: error.message 
     }, 500);
   }

@@ -349,6 +349,34 @@ export const DolibarrService = {
       
       console.log(`URL: ${url}?modulepart=${params.modulepart}&original_file=${encodeURIComponent(params.original_file)}`);
       
+      // Essayer d'abord avec Accept: application/pdf pour obtenir directement le PDF binaire
+      try {
+        const response = await axios({
+          method: 'GET',
+          url: url,
+          params: params,
+          headers: {
+            'Accept': 'application/pdf',
+            'DOLAPIKEY': DOLIBARR_API_KEY
+          },
+          responseType: 'arraybuffer' // Important pour récupérer les données binaires
+        });
+        
+        // Vérifier si nous avons bien reçu un PDF (vérifier le Content-Type)
+        const contentType = response.headers['content-type'];
+        if (contentType && contentType.includes('application/pdf')) {
+          console.log(`PDF récupéré avec succès pour la facture ${id}, taille: ${response.data.length} octets`);
+          return response.data; // Retourner directement les données binaires
+        } else {
+          console.warn(`Réponse reçue mais pas au format PDF (${contentType}), essai avec Accept: application/json...`);
+          // Continuer avec la méthode alternative ci-dessous
+        }
+      } catch (pdfError) {
+        console.warn(`Erreur lors de la récupération directe du PDF: ${pdfError.message}, essai avec Accept: application/json...`);
+        // Continuer avec la méthode alternative ci-dessous
+      }
+      
+      // Méthode alternative: demander le PDF en JSON (base64) puis le convertir
       const response = await axios({
         method: 'GET',
         url: url,
@@ -360,7 +388,36 @@ export const DolibarrService = {
         responseType: 'arraybuffer' // Important pour récupérer les données binaires
       });
       
-      return response.data;
+      // Vérifier si la réponse est en JSON ou directement en binaire
+      let pdfData = response.data;
+      const contentType = response.headers['content-type'];
+      
+      if (contentType && contentType.includes('application/json')) {
+        // Si c'est du JSON, essayer de l'interpréter et d'extraire les données binaires
+        try {
+          // Convertir ArrayBuffer en chaîne pour pouvoir parser le JSON
+          const jsonStr = Buffer.from(response.data).toString('utf-8');
+          const jsonData = JSON.parse(jsonStr);
+          
+          // Si le JSON contient des données en base64, les convertir en Buffer
+          if (jsonData && jsonData.content) {
+            pdfData = Buffer.from(jsonData.content, 'base64');
+            console.log(`PDF extrait du JSON pour la facture ${id}, taille: ${pdfData.length} octets`);
+          } else {
+            throw new Error('Format JSON inattendu, pas de champ content');
+          }
+        } catch (jsonError) {
+          console.error(`Erreur lors du parsing JSON: ${jsonError.message}`);
+          // Continuer avec les données binaires brutes
+        }
+      } else if (contentType && contentType.includes('application/pdf')) {
+        // Si c'est directement un PDF, utiliser les données telles quelles
+        console.log(`PDF récupéré directement pour la facture ${id}, taille: ${pdfData.length} octets`);
+      } else {
+        console.warn(`Type de contenu inattendu: ${contentType}, tentative de traitement comme PDF binaire`);
+      }
+      
+      return pdfData;
     } catch (error) {
       console.error(`Erreur lors de la récupération du PDF de la facture ${id}:`, error);
       throw error;
