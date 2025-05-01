@@ -1,7 +1,27 @@
 import { adminDb } from './adminConfig.js';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getFirebaseAdmin } from './adminConfig.js';
+import { DolibarrService } from '../dolibarrService.js';
 
 /**
- * Service pour gérer les tiers (clients/prospects) dans Firestore
+ * Fonction utilitaire pour filtrer les valeurs undefined d'un objet
+ * @param {Object} obj - Objet à filtrer
+ * @returns {Object} - Objet filtré
+ */
+function filterUndefinedValues(obj) {
+  const filteredObj = {};
+  
+  for (const key in obj) {
+    if (obj[key] !== undefined) {
+      filteredObj[key] = obj[key];
+    }
+  }
+  
+  return filteredObj;
+}
+
+/**
+ * Service pour gérer les tiers dans Firestore
  */
 export const FirestoreThirdPartyService = {
   /**
@@ -161,7 +181,128 @@ export const FirestoreThirdPartyService = {
       console.error(`Erreur lors de la récupération du tiers ${id} depuis Firestore:`, error);
       throw error;
     }
-  }
+  },
+  
+  /**
+   * Synchronise un tiers spécifique de Dolibarr vers Firestore avec toutes les informations associées
+   * @param {Object} thirdParty - Données du tiers à synchroniser
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
+   */
+  syncThirdPartyWithDetails: async (thirdParty, includeDetails = true) => {
+    try {
+      // Initialiser Firebase Admin si ce n'est pas déjà fait
+      const admin = getFirebaseAdmin();
+      const db = getFirestore();
+      
+      // Filtrer les valeurs undefined
+      const filteredThirdParty = filterUndefinedValues(thirdParty);
+      
+      // Référence à la collection des tiers
+      const thirdPartiesRef = db.collection('thirdparties');
+      
+      // ID du tiers
+      const thirdPartyId = thirdParty.id.toString();
+      
+      // Données à enregistrer
+      const thirdPartyData = {
+        ...filteredThirdParty,
+        lastSyncedAt: Date.now()
+      };
+      
+      // Si on veut inclure les détails
+      if (includeDetails) {
+        try {
+          // Récupérer les comptes bancaires du tiers
+          const bankAccounts = await DolibarrService.getThirdPartyBankAccounts(thirdPartyId);
+          if (bankAccounts && Array.isArray(bankAccounts)) {
+            thirdPartyData.bankAccounts = bankAccounts;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des comptes bancaires du tiers ${thirdPartyId}:`, error);
+          // On continue même si on n'a pas pu récupérer les comptes bancaires
+        }
+        
+        try {
+          // Récupérer les catégories client du tiers
+          const customerCategories = await DolibarrService.getThirdPartyCustomerCategories(thirdPartyId);
+          if (customerCategories && Array.isArray(customerCategories)) {
+            thirdPartyData.customerCategories = customerCategories;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des catégories client du tiers ${thirdPartyId}:`, error);
+          // On continue même si on n'a pas pu récupérer les catégories client
+        }
+        
+        try {
+          // Récupérer les catégories fournisseur du tiers
+          const supplierCategories = await DolibarrService.getThirdPartySupplierCategories(thirdPartyId);
+          if (supplierCategories && Array.isArray(supplierCategories)) {
+            thirdPartyData.supplierCategories = supplierCategories;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des catégories fournisseur du tiers ${thirdPartyId}:`, error);
+          // On continue même si on n'a pas pu récupérer les catégories fournisseur
+        }
+        
+        try {
+          // Récupérer les factures impayées du tiers
+          const outstandingInvoices = await DolibarrService.getThirdPartyOutstandingInvoices(thirdPartyId);
+          if (outstandingInvoices) {
+            thirdPartyData.outstandingInvoices = outstandingInvoices;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des factures impayées du tiers ${thirdPartyId}:`, error);
+          // On continue même si on n'a pas pu récupérer les factures impayées
+        }
+        
+        try {
+          // Récupérer les commandes impayées du tiers
+          const outstandingOrders = await DolibarrService.getThirdPartyOutstandingOrders(thirdPartyId);
+          if (outstandingOrders) {
+            thirdPartyData.outstandingOrders = outstandingOrders;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des commandes impayées du tiers ${thirdPartyId}:`, error);
+          // On continue même si on n'a pas pu récupérer les commandes impayées
+        }
+        
+        try {
+          // Récupérer les propositions commerciales impayées du tiers
+          const outstandingProposals = await DolibarrService.getThirdPartyOutstandingProposals(thirdPartyId);
+          if (outstandingProposals) {
+            thirdPartyData.outstandingProposals = outstandingProposals;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des propositions impayées du tiers ${thirdPartyId}:`, error);
+          // On continue même si on n'a pas pu récupérer les propositions impayées
+        }
+        
+        try {
+          // Récupérer les représentants du tiers
+          const representatives = await DolibarrService.getThirdPartyRepresentatives(thirdPartyId);
+          if (representatives && Array.isArray(representatives)) {
+            thirdPartyData.representatives = representatives;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des représentants du tiers ${thirdPartyId}:`, error);
+          // On continue même si on n'a pas pu récupérer les représentants
+        }
+      }
+      
+      // Ajouter ou mettre à jour le tiers dans Firestore
+      await thirdPartiesRef.doc(thirdPartyId).set(thirdPartyData, { merge: true });
+      
+      return {
+        success: true,
+        id: thirdPartyId,
+        message: `Tiers ${thirdPartyId} synchronisé avec succès`
+      };
+    } catch (error) {
+      console.error('Erreur lors de la synchronisation du tiers avec détails:', error);
+      throw error;
+    }
+  },
 };
 
 export default FirestoreThirdPartyService;

@@ -1,11 +1,15 @@
 import { adminDb } from './adminConfig.js';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getFirebaseAdmin } from './adminConfig.js';
+import { FirestoreStorageService } from './storageService.js';
+import { DolibarrService } from '../dolibarrService.js';
 
 /**
  * Fonction utilitaire pour filtrer les valeurs undefined d'un objet
  * @param {Object} obj - Objet à filtrer
  * @returns {Object} - Objet sans valeurs undefined
  */
-const filterUndefinedValues = (obj) => {
+function filterUndefinedValues(obj) {
   const filteredObj = {};
   
   for (const key in obj) {
@@ -28,65 +32,47 @@ export const FirestoreInvoiceService = {
    */
   syncInvoice: async (invoice) => {
     try {
-      // Utiliser l'ID de Dolibarr comme identifiant dans Firestore
-      const invoiceRef = adminDb.collection('invoices').doc(invoice.id.toString());
-      
-      // Préparer les données à stocker dans Firestore
-      const invoiceData = {
-        id: invoice.id,
-        ref: invoice.ref,
-        ref_ext: invoice.ref_ext,
-        ref_client: invoice.ref_client,
-        ref_supplier: invoice.ref_supplier,
-        socid: invoice.socid,  // ID du client/tiers
-        datec: invoice.datec,  // Date de création
-        datef: invoice.datef,  // Date de facturation
-        date_lim_reglement: invoice.date_lim_reglement,  // Date limite de règlement
-        date_valid: invoice.date_valid,  // Date de validation
-        date_closing: invoice.date_closing,  // Date de clôture
-        tva: invoice.tva,  // TVA
-        localtax1: invoice.localtax1,
-        localtax2: invoice.localtax2,
-        total_ht: invoice.total_ht,  // Total HT
-        total_ttc: invoice.total_ttc,  // Total TTC
-        total_tva: invoice.total_tva,  // Total TVA
-        paye: invoice.paye,  // Statut de paiement (0=non, 1=oui)
-        fk_statut: invoice.fk_statut,  // Statut de la facture
-        close_code: invoice.close_code,
-        close_note: invoice.close_note,
-        type: invoice.type,  // Type de facture
-        remise_percent: invoice.remise_percent,  // Remise en pourcentage
-        remise_absolue: invoice.remise_absolue,  // Remise absolue
-        remise: invoice.remise,  // Remise
-        note_private: invoice.note_private,  // Note privée
-        note_public: invoice.note_public,  // Note publique
-        fk_account: invoice.fk_account,  // Compte bancaire
-        fk_currency: invoice.fk_currency,  // Devise
-        fk_cond_reglement: invoice.fk_cond_reglement,  // Condition de règlement
-        fk_mode_reglement: invoice.fk_mode_reglement,  // Mode de règlement
-        model_pdf: invoice.model_pdf,  // Modèle PDF
-        last_main_doc: invoice.last_main_doc,  // Dernier document principal
-        situation_cycle_ref: invoice.situation_cycle_ref,  // Référence du cycle de situation
-        situation_counter: invoice.situation_counter,  // Compteur de situation
-        situation_final: invoice.situation_final,  // Situation finale
-        retained_warranty: invoice.retained_warranty,  // Garantie retenue
-        retained_warranty_date_limit: invoice.retained_warranty_date_limit,  // Date limite de garantie retenue
-        retained_warranty_fk_cond_reglement: invoice.retained_warranty_fk_cond_reglement,  // Condition de règlement de garantie retenue
-        // Métadonnées
-        lastSyncedAt: Date.now(),
-        source: 'dolibarr'
-      };
+      // Initialiser Firebase Admin si ce n'est pas déjà fait
+      const admin = getFirebaseAdmin();
+      const db = getFirestore();
       
       // Filtrer les valeurs undefined
-      const filteredInvoiceData = filterUndefinedValues(invoiceData);
+      const filteredInvoice = filterUndefinedValues(invoice);
       
-      // Enregistrer dans Firestore
-      await invoiceRef.set(filteredInvoiceData, { merge: true });
-      console.log(`Facture ${invoice.id} (${invoice.ref}) synchronisée avec succès`);
+      // Référence à la collection des factures
+      const invoicesRef = db.collection('invoices');
       
-      return { success: true, id: invoice.id };
+      // ID de la facture
+      const invoiceId = invoice.id.toString();
+      
+      // Ajouter ou mettre à jour la facture dans Firestore
+      await invoicesRef.doc(invoiceId).set(filteredInvoice, { merge: true });
+      
+      // Récupérer et stocker le PDF de la facture
+      try {
+        // Récupérer le PDF depuis Dolibarr
+        const pdfData = await DolibarrService.getInvoicePdf(invoiceId);
+        
+        // Télécharger le PDF dans Firebase Storage
+        const storageResult = await FirestoreStorageService.uploadInvoicePdf(invoiceId, pdfData);
+        
+        // Mettre à jour la facture dans Firestore avec l'URL du PDF
+        if (storageResult.success) {
+          await invoicesRef.doc(invoiceId).update({
+            pdf_url: storageResult.url
+          });
+        }
+      } catch (pdfError) {
+        console.error(`Erreur lors de la synchronisation du PDF de la facture ${invoiceId}:`, pdfError);
+        // On continue même si le PDF n'a pas pu être synchronisé
+      }
+      
+      return {
+        success: true,
+        id: invoiceId
+      };
     } catch (error) {
-      console.error(`Erreur lors de la synchronisation de la facture ${invoice.id}:`, error);
+      console.error('Erreur lors de la synchronisation de la facture:', error);
       throw error;
     }
   },
@@ -243,7 +229,209 @@ export const FirestoreInvoiceService = {
       console.error(`Erreur lors de la récupération des factures du client ${clientId} depuis Firestore:`, error);
       throw error;
     }
-  }
+  },
+  
+  /**
+   * Met à jour une facture existante dans Firestore
+   * @param {string} id - ID de la facture à mettre à jour
+   * @param {Object} data - Données à mettre à jour
+   * @returns {Promise<Object>} - Résultat de l'opération
+   */
+  updateInvoice: async (id, data) => {
+    try {
+      // Initialiser Firebase Admin si ce n'est pas déjà fait
+      const admin = getFirebaseAdmin();
+      const db = getFirestore();
+      
+      // Référence à la collection des factures
+      const invoicesRef = db.collection('invoices');
+      
+      // Filtrer les valeurs undefined
+      const filteredData = filterUndefinedValues(data);
+      
+      // Ajouter un timestamp de mise à jour
+      filteredData.lastUpdatedAt = Date.now();
+      
+      // Mettre à jour la facture dans Firestore
+      await invoicesRef.doc(id.toString()).update(filteredData);
+      
+      return {
+        success: true,
+        id: id,
+        message: 'Facture mise à jour avec succès'
+      };
+    } catch (error) {
+      console.error(`Erreur lors de la mise à jour de la facture ${id}:`, error);
+      throw error;
+    }
+  },
+  
+  /**
+   * Synchronise une facture spécifique de Dolibarr vers Firestore avec toutes les informations associées
+   * @param {Object} invoice - Données de la facture à synchroniser
+   * @param {boolean} includeDetails - Si true, inclut les lignes, remises et paiements
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
+   */
+  syncInvoiceWithDetails: async (invoice, includeDetails = true) => {
+    try {
+      // Initialiser Firebase Admin si ce n'est pas déjà fait
+      const admin = getFirebaseAdmin();
+      const db = getFirestore();
+      
+      // Filtrer les valeurs undefined
+      const filteredInvoice = filterUndefinedValues(invoice);
+      
+      // Référence à la collection des factures
+      const invoicesRef = db.collection('invoices');
+      
+      // ID de la facture
+      const invoiceId = invoice.id.toString();
+      
+      // Données à enregistrer
+      const invoiceData = {
+        ...filteredInvoice,
+        lastSyncedAt: Date.now()
+      };
+      
+      // Si on veut inclure les détails
+      if (includeDetails) {
+        try {
+          // Récupérer les lignes de la facture
+          const lines = await DolibarrService.getInvoiceLines(invoiceId);
+          if (lines && Array.isArray(lines)) {
+            invoiceData.lines = lines;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des lignes de la facture ${invoiceId}:`, error);
+          // On continue même si on n'a pas pu récupérer les lignes
+        }
+        
+        try {
+          // Récupérer les remises de la facture
+          const discounts = await DolibarrService.getInvoiceDiscounts(invoiceId);
+          if (discounts && Array.isArray(discounts)) {
+            invoiceData.discounts = discounts;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des remises de la facture ${invoiceId}:`, error);
+          // On continue même si on n'a pas pu récupérer les remises
+        }
+        
+        try {
+          // Récupérer les paiements de la facture
+          const payments = await DolibarrService.getInvoicePayments(invoiceId);
+          if (payments && Array.isArray(payments)) {
+            invoiceData.payments = payments;
+          }
+        } catch (error) {
+          console.error(`Erreur lors de la récupération des paiements de la facture ${invoiceId}:`, error);
+          // On continue même si on n'a pas pu récupérer les paiements
+        }
+      }
+      
+      // Ajouter ou mettre à jour la facture dans Firestore
+      await invoicesRef.doc(invoiceId).set(invoiceData, { merge: true });
+      
+      // Récupérer et stocker le PDF de la facture
+      try {
+        // Récupérer le PDF depuis Dolibarr
+        const pdfData = await DolibarrService.getInvoicePdf(invoiceId);
+        
+        // Télécharger le PDF dans Firebase Storage
+        const storageResult = await FirestoreStorageService.uploadInvoicePdf(invoiceId, pdfData);
+        
+        // Mettre à jour la facture dans Firestore avec l'URL du PDF
+        if (storageResult.success) {
+          await invoicesRef.doc(invoiceId).update({
+            pdf_url: storageResult.url
+          });
+        }
+      } catch (pdfError) {
+        console.error(`Erreur lors de la synchronisation du PDF de la facture ${invoiceId}:`, pdfError);
+        // On continue même si le PDF n'a pas pu être synchronisé
+      }
+      
+      return {
+        success: true,
+        id: invoiceId,
+        message: `Facture ${invoiceId} synchronisée avec succès`
+      };
+    } catch (error) {
+      console.error('Erreur lors de la synchronisation de la facture avec détails:', error);
+      throw error;
+    }
+  },
+  
+  /**
+   * Synchronise une facture spécifique de Dolibarr vers Firestore avec son PDF
+   * @param {Object} invoice - Données de la facture à synchroniser
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @param {boolean} includePdf - Si true, télécharge et stocke le PDF de la facture
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
+   */
+  syncInvoiceWithDetailsAndPdf: async (invoice, includeDetails = true, includePdf = true) => {
+    try {
+      // Synchroniser la facture avec ses détails
+      const invoiceResult = await FirestoreInvoiceService.syncInvoiceWithDetails(invoice, includeDetails);
+      
+      // Si on ne veut pas inclure le PDF, on s'arrête là
+      if (!includePdf) {
+        return invoiceResult;
+      }
+      
+      try {
+        // Récupérer le PDF de la facture
+        const pdfData = await DolibarrService.getInvoicePdf(invoice.id);
+        
+        // Stocker le PDF dans Firebase Storage
+        const pdfResult = await FirestoreStorageService.uploadInvoicePdf(invoice.id, pdfData);
+        
+        // Mettre à jour la facture dans Firestore avec l'URL du PDF
+        if (pdfResult.success) {
+          const db = getFirestore();
+          const invoiceRef = db.collection('invoices').doc(invoice.id.toString());
+          
+          await invoiceRef.update({
+            pdfUrl: pdfResult.url,
+            pdfPath: pdfResult.path,
+            pdfSize: pdfResult.size,
+            lastPdfSyncedAt: Date.now()
+          });
+          
+          return {
+            ...invoiceResult,
+            pdf: {
+              success: true,
+              url: pdfResult.url,
+              path: pdfResult.path,
+              size: pdfResult.size
+            }
+          };
+        }
+        
+        return {
+          ...invoiceResult,
+          pdf: {
+            success: false,
+            message: 'Le PDF a été synchronisé mais n\'a pas pu être stocké dans Firebase Storage'
+          }
+        };
+      } catch (pdfError) {
+        console.error(`Erreur lors de la synchronisation du PDF de la facture ${invoice.id}:`, pdfError);
+        
+        return {
+          ...invoiceResult,
+          pdf: {
+            success: false,
+            error: pdfError.message
+          }
+        };
+      }
+    } catch (error) {
+      console.error('Erreur lors de la synchronisation de la facture avec détails et PDF:', error);
+      throw error;
+    }
+  },
 };
 
 export default FirestoreInvoiceService;

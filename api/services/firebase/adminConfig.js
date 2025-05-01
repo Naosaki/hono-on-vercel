@@ -12,36 +12,53 @@ let adminApp;
 let adminDb;
 let credential;
 
+/**
+ * Récupérer l'instance de Firebase Admin, l'initialise si nécessaire
+ * @returns {Object} - Instance de Firebase Admin
+ */
+export function getFirebaseAdmin() {
+  try {
+    // Vérifier si Firebase Admin est déjà initialisé
+    return admin.app();
+  } catch (error) {
+    // Déterminer la méthode d'authentification en fonction de l'environnement
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      // En production (Vercel), utiliser la variable d'environnement
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      credential = admin.credential.cert(serviceAccount);
+      console.log('Firebase Admin initialisé avec le compte de service depuis la variable d\'environnement');
+    } else {
+      // En local, utiliser le fichier
+      const __filename = fileURLToPath(import.meta.url);
+      const __dirname = dirname(__filename);
+      const serviceAccountPath = join(__dirname, '../../../config/naocrm-cde53-firebase-adminsdk-fbsvc-2ede9e2cec.json');
+      
+      if (fs.existsSync(serviceAccountPath)) {
+        credential = admin.credential.cert(serviceAccountPath);
+        console.log('Firebase Admin initialisé avec le compte de service depuis le fichier local');
+      } else {
+        throw new Error('Fichier de compte de service Firebase introuvable');
+      }
+    }
+
+    // Initialiser Firebase Admin
+    adminApp = admin.initializeApp({
+      credential: credential,
+      databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`,
+      storageBucket: `${process.env.FIREBASE_STORAGE_BUCKET}`
+    });
+    console.log('Firebase Admin initialisé avec succès');
+    
+    return adminApp;
+  }
+}
+
+// Initialiser Firebase Admin
 try {
   // Vérifier si Firebase Admin est déjà initialisé
   adminApp = admin.app();
 } catch (error) {
-  // Déterminer la méthode d'authentification en fonction de l'environnement
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    // En production (Vercel), utiliser la variable d'environnement
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    credential = admin.credential.cert(serviceAccount);
-    console.log('Firebase Admin initialisé avec le compte de service depuis la variable d\'environnement');
-  } else {
-    // En local, utiliser le fichier
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const serviceAccountPath = join(__dirname, '../../../config/naocrm-cde53-firebase-adminsdk-fbsvc-2ede9e2cec.json');
-    
-    if (fs.existsSync(serviceAccountPath)) {
-      credential = admin.credential.cert(serviceAccountPath);
-      console.log('Firebase Admin initialisé avec le compte de service depuis le fichier local');
-    } else {
-      throw new Error('Fichier de compte de service Firebase introuvable');
-    }
-  }
-
-  // Initialiser Firebase Admin
-  adminApp = admin.initializeApp({
-    credential: credential,
-    databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`
-  });
-  console.log('Firebase Admin initialisé avec succès');
+  adminApp = getFirebaseAdmin();
 }
 
 // Obtenir une instance de Firestore
