@@ -28,8 +28,20 @@ export const DolibarrService = {
    */
   getThirdParties: async (params = {}) => {
     try {
-      const response = await dolibarrAPI.get('/thirdparties', { params });
-      return response.data;
+      // Utiliser une limite plus élevée pour récupérer tous les tiers en une seule requête
+      const queryParams = { 
+        ...params,
+        limit: params.limit || 500,  // Limite par défaut à 500
+        sortfield: params.sortfield || 't.rowid',
+        sortorder: params.sortorder || 'ASC'
+      };
+      
+      console.log(`Récupération des tiers avec limit=${queryParams.limit}`);
+      const response = await dolibarrAPI.get('/thirdparties', { params: queryParams });
+      const thirdParties = response.data;
+      
+      console.log(`Total de ${thirdParties.length} tiers récupérés depuis Dolibarr`);
+      return thirdParties;
     } catch (error) {
       console.error('Erreur lors de la récupération des tiers:', error);
       throw error;

@@ -32,7 +32,7 @@ export const FirestoreThirdPartyService = {
   syncThirdParty: async (thirdParty) => {
     try {
       // Utiliser l'ID de Dolibarr comme identifiant dans Firestore
-      const thirdPartyRef = adminDb.collection('thirdParties').doc(thirdParty.id.toString());
+      const thirdPartyRef = adminDb.collection('thirdparties').doc(thirdParty.id.toString());
       
       // Préparer les données à stocker dans Firestore
       // Nous pouvons filtrer ou transformer les données si nécessaire
@@ -87,7 +87,7 @@ export const FirestoreThirdPartyService = {
       
       // Traiter chaque tiers par lots pour optimiser les performances
       for (const thirdParty of thirdParties) {
-        const thirdPartyRef = adminDb.collection('thirdParties').doc(thirdParty.id.toString());
+        const thirdPartyRef = adminDb.collection('thirdparties').doc(thirdParty.id.toString());
         
         // Préparer les données à stocker
         const thirdPartyData = {
@@ -149,7 +149,7 @@ export const FirestoreThirdPartyService = {
    */
   getAllThirdParties: async () => {
     try {
-      const snapshot = await adminDb.collection('thirdParties').get();
+      const snapshot = await adminDb.collection('thirdparties').get();
       const thirdParties = [];
       
       snapshot.forEach(doc => {
@@ -170,7 +170,7 @@ export const FirestoreThirdPartyService = {
    */
   getThirdPartyById: async (id) => {
     try {
-      const doc = await adminDb.collection('thirdParties').doc(id.toString()).get();
+      const doc = await adminDb.collection('thirdparties').doc(id.toString()).get();
       
       if (!doc.exists) {
         throw new Error(`Tiers avec ID ${id} non trouvé dans Firestore`);
