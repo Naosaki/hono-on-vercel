@@ -7,31 +7,33 @@ import axios from 'axios';
 import { getFirestore } from 'firebase-admin/firestore';
 
 /**
- * Service pour synchroniser les donnu00e9es entre Dolibarr et Firestore
+ * Service pour synchroniser les données entre Dolibarr et Firestore
  */
 export const SyncService = {
   /**
    * Synchronise tous les tiers (clients/prospects) de Dolibarr vers Firestore
-   * @param {boolean} includeDetails - Si true, inclut les informations suppu00e9mentaires
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncAllThirdParties: async (includeDetails = true) => {
     try {
-      console.log('Du00e9marrage de la synchronisation des tiers...');
+      console.log('Démarrage de la synchronisation des tiers...');
       
-      // 1. Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // 1. Récupérer les données depuis Dolibarr
+      // Utiliser la méthode améliorée qui gère la pagination
       const thirdParties = await DolibarrService.getThirdParties();
-      console.log(`${thirdParties.length} tiers ru00e9cupu00e9ru00e9s depuis Dolibarr`);
+      console.log(`${thirdParties.length} tiers récupérés depuis Dolibarr`);
       
       // 2. Synchroniser avec Firestore
       let count = 0;
-      const batchSize = 10; // Traiter les tiers par lots de 10
+      const batchSize = 20; // Augmenter la taille du lot pour plus d'efficacité
+      const totalBatches = Math.ceil(thirdParties.length / batchSize);
       
       for (let i = 0; i < thirdParties.length; i += batchSize) {
         const batch = thirdParties.slice(i, i + batchSize);
-        console.log(`Traitement du lot ${i / batchSize + 1}/${Math.ceil(thirdParties.length / batchSize)}...`);
+        console.log(`Traitement du lot ${Math.floor(i / batchSize) + 1}/${totalBatches} (${batch.length} tiers)...`);
         
-        // Traiter les tiers en parrallu00e8le
+        // Traiter les tiers en parallèle
         const promises = batch.map(thirdParty => {
           if (includeDetails) {
             return FirestoreThirdPartyService.syncThirdPartyWithDetails(thirdParty, includeDetails);
@@ -42,12 +44,18 @@ export const SyncService = {
         
         const results = await Promise.all(promises);
         count += results.filter(result => result.success).length;
+        
+        // Ajouter un petit délai entre les lots pour éviter de surcharger l'API
+        if (i + batchSize < thirdParties.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
       }
       
       return {
         success: true,
-        message: `${count} tiers synchronisu00e9s avec succu00e8s`,
-        count
+        message: `${count} tiers synchronisés avec succès sur ${thirdParties.length} récupérés`,
+        count,
+        total: thirdParties.length
       };
     } catch (error) {
       console.error('Erreur lors de la synchronisation des tiers:', error);
@@ -60,16 +68,16 @@ export const SyncService = {
   },
   
   /**
-   * Synchronise un tiers spu00e9cifique de Dolibarr vers Firestore
-   * @param {string} id - ID du tiers u00e0 synchroniser
-   * @param {boolean} includeDetails - Si true, inclut les informations suppu00e9mentaires
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * Synchronise un tiers spécifique de Dolibarr vers Firestore
+   * @param {string} id - ID du tiers à synchroniser
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncThirdParty: async (id, includeDetails = true) => {
     try {
-      console.log(`Du00e9marrage de la synchronisation du tiers ${id}...`);
+      console.log(`Démarrage de la synchronisation du tiers ${id}...`);
       
-      // 1. Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // 1. Récupérer les données depuis Dolibarr
       const thirdParty = await DolibarrService.getThirdPartyById(id);
       
       // 2. Synchroniser avec Firestore
@@ -82,7 +90,7 @@ export const SyncService = {
       
       return {
         success: true,
-        message: `Tiers ${id} synchronisu00e9 avec succu00e8s`,
+        message: `Tiers ${id} synchronisé avec succès`,
         id: result.id
       };
     } catch (error) {
@@ -96,16 +104,16 @@ export const SyncService = {
   },
   
   /**
-   * Compare les donnu00e9es entre Dolibarr et Firestore pour un tiers spu00e9cifique
-   * @param {string} id - ID du tiers u00e0 comparer
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de la comparaison
+   * Compare les données entre Dolibarr et Firestore pour un tiers spécifique
+   * @param {string} id - ID du tiers à comparer
+   * @returns {Promise} - Promesse contenant le résultat de la comparaison
    */
   compareThirdParty: async (id) => {
     try {
-      // Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // Récupérer les données depuis Dolibarr
       const dolibarrData = await DolibarrService.getThirdPartyById(id);
       
-      // Ru00e9cupu00e9rer les donnu00e9es depuis Firestore
+      // Récupérer les données depuis Firestore
       let firestoreData;
       try {
         firestoreData = await FirestoreThirdPartyService.getThirdPartyById(id);
@@ -122,7 +130,7 @@ export const SyncService = {
         };
       }
       
-      // Comparer les donnu00e9es
+      // Comparer les données
       const differences = [];
       const keysToCompare = [
         'name', 'email', 'phone', 'status', 'address', 'zip', 'town',
@@ -157,16 +165,16 @@ export const SyncService = {
   
   /**
    * Synchronise toutes les factures de Dolibarr vers Firestore
-   * @param {boolean} includeDetails - Si true, inclut les informations suppu00e9mentaires
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncAllInvoices: async (includeDetails = true) => {
     try {
-      console.log('Du00e9marrage de la synchronisation des factures...');
+      console.log('Démarrage de la synchronisation des factures...');
       
-      // 1. Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // 1. Récupérer les données depuis Dolibarr
       const invoices = await DolibarrService.getInvoices();
-      console.log(`${invoices.length} factures ru00e9cupu00e9ru00e9es depuis Dolibarr`);
+      console.log(`${invoices.length} factures récupérées depuis Dolibarr`);
       
       // 2. Synchroniser avec Firestore
       let count = 0;
@@ -176,7 +184,7 @@ export const SyncService = {
         const batch = invoices.slice(i, i + batchSize);
         console.log(`Traitement du lot ${i / batchSize + 1}/${Math.ceil(invoices.length / batchSize)}...`);
         
-        // Traiter les factures en parrallu00e8le
+        // Traiter les factures en parallèle
         const promises = batch.map(invoice => {
           if (includeDetails) {
             return FirestoreInvoiceService.syncInvoiceWithDetails(invoice, includeDetails);
@@ -191,7 +199,7 @@ export const SyncService = {
       
       return {
         success: true,
-        message: `${count} factures synchronisu00e9es avec succu00e8s`,
+        message: `${count} factures synchronisées avec succès`,
         count
       };
     } catch (error) {
@@ -205,16 +213,16 @@ export const SyncService = {
   },
   
   /**
-   * Synchronise une facture spu00e9cifique de Dolibarr vers Firestore
-   * @param {string} id - ID de la facture u00e0 synchroniser
-   * @param {boolean} includeDetails - Si true, inclut les informations suppu00e9mentaires
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * Synchronise une facture spécifique de Dolibarr vers Firestore
+   * @param {string} id - ID de la facture à synchroniser
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncInvoice: async (id, includeDetails = true) => {
     try {
-      console.log(`Du00e9marrage de la synchronisation de la facture ${id}...`);
+      console.log(`Démarrage de la synchronisation de la facture ${id}...`);
       
-      // 1. Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // 1. Récupérer les données depuis Dolibarr
       const invoice = await DolibarrService.getInvoiceById(id);
       
       // 2. Synchroniser avec Firestore
@@ -227,7 +235,7 @@ export const SyncService = {
       
       return {
         success: true,
-        message: `Facture ${id} synchronisu00e9e avec succu00e8s`,
+        message: `Facture ${id} synchronisée avec succès`,
         id: result.id
       };
     } catch (error) {
@@ -241,16 +249,16 @@ export const SyncService = {
   },
   
   /**
-   * Compare les donnu00e9es entre Dolibarr et Firestore pour une facture spu00e9cifique
-   * @param {string} id - ID de la facture u00e0 comparer
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de la comparaison
+   * Compare les données entre Dolibarr et Firestore pour une facture spécifique
+   * @param {string} id - ID de la facture à comparer
+   * @returns {Promise} - Promesse contenant le résultat de la comparaison
    */
   compareInvoice: async (id) => {
     try {
-      // Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // Récupérer les données depuis Dolibarr
       const dolibarrData = await DolibarrService.getInvoiceById(id);
       
-      // Ru00e9cupu00e9rer les donnu00e9es depuis Firestore
+      // Récupérer les données depuis Firestore
       let firestoreData;
       try {
         firestoreData = await FirestoreInvoiceService.getInvoiceById(id);
@@ -267,7 +275,7 @@ export const SyncService = {
         };
       }
       
-      // Comparer les donnu00e9es
+      // Comparer les données
       const differences = [];
       const keysToCompare = [
         'ref', 'total_ht', 'total_ttc', 'total_tva', 'paye', 'fk_statut',
@@ -302,17 +310,17 @@ export const SyncService = {
   
   /**
    * Synchronise toutes les factures de Dolibarr vers Firestore avec leurs PDFs
-   * @param {boolean} includeDetails - Si true, inclut les informations suppu00e9mentaires
-   * @param {boolean} includePdf - Si true, tu00e9lu00e9charge et stocke les PDFs des factures
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @param {boolean} includePdf - Si true, télécharge et stocke les PDFs des factures
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncAllInvoicesWithPdf: async (includeDetails = true, includePdf = true) => {
     try {
-      console.log('Du00e9marrage de la synchronisation des factures avec PDFs...');
+      console.log('Démarrage de la synchronisation des factures avec PDFs...');
       
-      // 1. Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // 1. Récupérer les données depuis Dolibarr
       const invoices = await DolibarrService.getInvoices();
-      console.log(`${invoices.length} factures ru00e9cupu00e9ru00e9es depuis Dolibarr`);
+      console.log(`${invoices.length} factures récupérées depuis Dolibarr`);
       
       // 2. Synchroniser avec Firestore
       let count = 0;
@@ -320,27 +328,27 @@ export const SyncService = {
       let errorCount = 0;
       const errors = [];
       const results = [];
-      const batchSize = 5; // Traiter les factures par lots de 5 (les PDFs peuvent u00eatre volumineux)
+      const batchSize = 5; // Traiter les factures par lots de 5 (les PDFs peuvent être volumineux)
       
       for (let i = 0; i < invoices.length; i += batchSize) {
         const batch = invoices.slice(i, i + batchSize);
         console.log(`Traitement du lot ${i / batchSize + 1}/${Math.ceil(invoices.length / batchSize)}...`);
         
-        // Traiter les factures en su00e9quentiel pour u00e9viter de surcharger l'API
+        // Traiter les factures en séquentiel pour éviter de surcharger l'API
         for (const invoice of batch) {
           try {
-            // Vu00e9rifier si la facture a une ru00e9fu00e9rence valide
+            // Vérifier si la facture a une référence valide
             if (!invoice.ref || invoice.ref.includes('(PROV)')) {
-              console.warn(`La facture ${invoice.id} n'a pas de ru00e9fu00e9rence valide (${invoice.ref || 'non du00e9finie'}), impossible de ru00e9cupu00e9rer son PDF`);
+              console.warn(`La facture ${invoice.id} n'a pas de référence valide (${invoice.ref || 'non définie'}), impossible de récupérer son PDF`);
               count++;
               errorCount++;
               errors.push({
                 id: invoice.id,
-                ref: invoice.ref || 'non du00e9finie',
-                error: 'Ru00e9fu00e9rence manquante ou provisoire'
+                ref: invoice.ref || 'non définie',
+                error: 'Référence manquante ou provisoire'
               });
               
-              // Synchroniser quand mu00eame la facture sans PDF
+              // Synchroniser quand même la facture sans PDF
               await FirestoreInvoiceService.syncInvoiceWithDetails(invoice, includeDetails);
               
               continue;
@@ -358,7 +366,7 @@ export const SyncService = {
                 success: true,
                 url: result.pdf.url
               });
-              console.log(`Facture ${invoice.id} (${invoice.ref}) synchronisu00e9e avec succu00e8s (${count}/${invoices.length})`);
+              console.log(`Facture ${invoice.id} (${invoice.ref}) synchronisée avec succès (${count}/${invoices.length})`);
             } else {
               errorCount++;
               const errorMessage = result.pdf ? result.pdf.error : 'Erreur inconnue';
@@ -384,7 +392,7 @@ export const SyncService = {
       
       return {
         success: true,
-        message: `${successCount} factures synchronisu00e9es avec succu00e8s, ${errorCount} u00e9checs`,
+        message: `${successCount} factures synchronisées avec succès, ${errorCount} échecs`,
         totalCount: invoices.length,
         successCount,
         errorCount,
@@ -402,17 +410,17 @@ export const SyncService = {
   },
   
   /**
-   * Synchronise une facture spu00e9cifique de Dolibarr vers Firestore avec son PDF
-   * @param {string} id - ID de la facture u00e0 synchroniser
-   * @param {boolean} includeDetails - Si true, inclut les informations suppu00e9mentaires
-   * @param {boolean} includePdf - Si true, tu00e9lu00e9charge et stocke le PDF de la facture
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * Synchronise une facture spécifique de Dolibarr vers Firestore avec son PDF
+   * @param {string} id - ID de la facture à synchroniser
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @param {boolean} includePdf - Si true, télécharge et stocke le PDF de la facture
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncInvoiceWithPdf: async (id, includeDetails = true, includePdf = true) => {
     try {
-      console.log(`Du00e9marrage de la synchronisation de la facture ${id} avec PDF...`);
+      console.log(`Démarrage de la synchronisation de la facture ${id} avec PDF...`);
       
-      // 1. Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // 1. Récupérer les données depuis Dolibarr
       const invoice = await DolibarrService.getInvoiceById(id);
       
       // 2. Synchroniser avec Firestore
@@ -420,7 +428,7 @@ export const SyncService = {
       
       return {
         success: true,
-        message: `Facture ${id} synchronisu00e9e avec succu00e8s${includePdf ? ' (avec PDF)' : ''}`,
+        message: `Facture ${id} synchronisée avec succès${includePdf ? ' (avec PDF)' : ''}`,
         id: result.id,
         pdf: result.pdf
       };
@@ -436,22 +444,22 @@ export const SyncService = {
   
   /**
    * Synchronise tous les produits de Dolibarr vers Firestore
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncAllProducts: async () => {
     try {
-      console.log('Du00e9marrage de la synchronisation des produits...');
+      console.log('Démarrage de la synchronisation des produits...');
       
-      // 1. Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // 1. Récupérer les données depuis Dolibarr
       const products = await DolibarrService.getProducts();
-      console.log(`${products.length} produits ru00e9cupu00e9ru00e9s depuis Dolibarr`);
+      console.log(`${products.length} produits récupérés depuis Dolibarr`);
       
       // 2. Synchroniser avec Firestore
       const result = await FirestoreProductService.syncAllProducts(products);
       
       return {
         success: true,
-        message: `${result.count} produits synchronisu00e9s avec succu00e8s`,
+        message: `${result.count} produits synchronisés avec succès`,
         count: result.count
       };
     } catch (error) {
@@ -465,15 +473,15 @@ export const SyncService = {
   },
   
   /**
-   * Synchronise un produit spu00e9cifique de Dolibarr vers Firestore
-   * @param {string} id - ID du produit u00e0 synchroniser
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * Synchronise un produit spécifique de Dolibarr vers Firestore
+   * @param {string} id - ID du produit à synchroniser
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncProduct: async (id) => {
     try {
-      console.log(`Du00e9marrage de la synchronisation du produit ${id}...`);
+      console.log(`Démarrage de la synchronisation du produit ${id}...`);
       
-      // 1. Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // 1. Récupérer les données depuis Dolibarr
       const product = await DolibarrService.getProductById(id);
       
       // 2. Synchroniser avec Firestore
@@ -481,7 +489,7 @@ export const SyncService = {
       
       return {
         success: true,
-        message: `Produit ${id} synchronisu00e9 avec succu00e8s`,
+        message: `Produit ${id} synchronisé avec succès`,
         id: result.id
       };
     } catch (error) {
@@ -495,16 +503,16 @@ export const SyncService = {
   },
   
   /**
-   * Compare les donnu00e9es entre Dolibarr et Firestore pour un produit spu00e9cifique
-   * @param {string} id - ID du produit u00e0 comparer
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de la comparaison
+   * Compare les données entre Dolibarr et Firestore pour un produit spécifique
+   * @param {string} id - ID du produit à comparer
+   * @returns {Promise} - Promesse contenant le résultat de la comparaison
    */
   compareProduct: async (id) => {
     try {
-      // Ru00e9cupu00e9rer les donnu00e9es depuis Dolibarr
+      // Récupérer les données depuis Dolibarr
       const dolibarrData = await DolibarrService.getProductById(id);
       
-      // Ru00e9cupu00e9rer les donnu00e9es depuis Firestore
+      // Récupérer les données depuis Firestore
       let firestoreData;
       try {
         firestoreData = await FirestoreProductService.getProductById(id);
@@ -521,7 +529,7 @@ export const SyncService = {
         };
       }
       
-      // Comparer les donnu00e9es
+      // Comparer les données
       const differences = [];
       const keysToCompare = [
         'ref', 'label', 'description', 'price', 'price_ttc', 'tva_tx',
@@ -556,21 +564,21 @@ export const SyncService = {
   
   /**
    * Synchronise toutes les factures de Firestore avec leurs PDFs depuis Dolibarr
-   * @param {boolean} updateDetails - Si true, met u00e0 jour les du00e9tails des factures depuis Dolibarr
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * @param {boolean} updateDetails - Si true, met à jour les détails des factures depuis Dolibarr
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncAllInvoicePdfsFromFirestore: async (updateDetails = true) => {
     try {
-      console.log('Du00e9marrage de la synchronisation des PDFs des factures depuis Firestore...');
+      console.log('Démarrage de la synchronisation des PDFs des factures depuis Firestore...');
       
-      // 1. Ru00e9cupu00e9rer toutes les factures depuis Firestore
+      // 1. Récupérer toutes les factures depuis Firestore
       const db = getFirestore();
       const invoicesSnapshot = await db.collection('invoices').get();
       
       if (invoicesSnapshot.empty) {
         return {
           success: false,
-          message: 'Aucune facture trouvu00e9e dans Firestore',
+          message: 'Aucune facture trouvée dans Firestore',
         };
       }
       
@@ -582,7 +590,7 @@ export const SyncService = {
         });
       });
       
-      console.log(`${invoices.length} factures ru00e9cupu00e9ru00e9es depuis Firestore`);
+      console.log(`${invoices.length} factures récupérées depuis Firestore`);
       
       // 2. Synchroniser avec Firebase Storage
       let count = 0;
@@ -590,25 +598,25 @@ export const SyncService = {
       let errorCount = 0;
       const errors = [];
       const results = [];
-      const batchSize = 5; // Traiter les factures par lots de 5 (les PDFs peuvent u00eatre volumineux)
+      const batchSize = 5; // Traiter les factures par lots de 5 (les PDFs peuvent être volumineux)
       
       for (let i = 0; i < invoices.length; i += batchSize) {
         const batch = invoices.slice(i, i + batchSize);
         console.log(`Traitement du lot ${i / batchSize + 1}/${Math.ceil(invoices.length / batchSize)}...`);
         
-        // Traiter les factures en su00e9quentiel pour u00e9viter de surcharger l'API
+        // Traiter les factures en séquentiel pour éviter de surcharger l'API
         for (const invoice of batch) {
           try {
-            // Si updateDetails est true, ru00e9cupu00e9rer les du00e9tails de la facture depuis Dolibarr
+            // Si updateDetails est true, récupérer les détails de la facture depuis Dolibarr
             let updatedInvoice = invoice;
             let dolibarrInvoice = null;
             
             if (updateDetails) {
               try {
-                console.log(`Ru00e9cupu00e9ration des du00e9tails de la facture ${invoice.id} depuis Dolibarr...`);
+                console.log(`Récupération des détails de la facture ${invoice.id} depuis Dolibarr...`);
                 dolibarrInvoice = await DolibarrService.getInvoiceById(invoice.id);
                 
-                // Mettre u00e0 jour les du00e9tails de la facture dans Firestore
+                // Mettre à jour les détails de la facture dans Firestore
                 if (dolibarrInvoice && dolibarrInvoice.id) {
                   const invoiceRef = db.collection('invoices').doc(invoice.id.toString());
                   
@@ -624,41 +632,41 @@ export const SyncService = {
                   filteredInvoice.lastSyncedAt = Date.now();
                   
                   await invoiceRef.update(filteredInvoice);
-                  console.log(`Du00e9tails de la facture ${invoice.id} mis u00e0 jour dans Firestore`);
+                  console.log(`Détails de la facture ${invoice.id} mis à jour dans Firestore`);
                   
-                  // Utiliser les du00e9tails mis u00e0 jour pour la suite
+                  // Utiliser les détails mis à jour pour la suite
                   updatedInvoice = {
                     ...invoice,
                     ...filteredInvoice
                   };
                 }
               } catch (detailsError) {
-                console.warn(`Erreur lors de la ru00e9cupu00e9ration des du00e9tails de la facture ${invoice.id}:`, detailsError.message);
-                // Continuer avec les donnu00e9es existantes
+                console.warn(`Erreur lors de la récupération des détails de la facture ${invoice.id}:`, detailsError.message);
+                // Continuer avec les données existantes
               }
             }
             
-            // Vu00e9rifier si la facture a une ru00e9fu00e9rence valide
+            // Vérifier si la facture a une référence valide
             if (!updatedInvoice.ref || updatedInvoice.ref.includes('(PROV)')) {
-              console.warn(`La facture ${updatedInvoice.id} n'a pas de ru00e9fu00e9rence valide (${updatedInvoice.ref || 'non du00e9finie'}), impossible de ru00e9cupu00e9rer son PDF`);
+              console.warn(`La facture ${updatedInvoice.id} n'a pas de référence valide (${updatedInvoice.ref || 'non définie'}), impossible de récupérer son PDF`);
               count++;
               errorCount++;
               errors.push({
                 id: updatedInvoice.id,
-                ref: updatedInvoice.ref || 'non du00e9finie',
-                error: 'Ru00e9fu00e9rence manquante ou provisoire'
+                ref: updatedInvoice.ref || 'non définie',
+                error: 'Référence manquante ou provisoire'
               });
               
-              // Synchroniser quand mu00eame la facture sans PDF
+              // Synchroniser quand même la facture sans PDF
               await FirestoreInvoiceService.syncInvoiceWithDetails(updatedInvoice, includeDetails);
               
               continue;
             }
             
-            // Ru00e9cupu00e9rer le PDF de la facture en utilisant la ru00e9fu00e9rence
-            console.log(`Ru00e9cupu00e9ration du PDF pour la facture ${updatedInvoice.id} avec la ru00e9fu00e9rence ${updatedInvoice.ref}...`);
+            // Récupérer le PDF de la facture en utilisant la référence
+            console.log(`Récupération du PDF pour la facture ${updatedInvoice.id} avec la référence ${updatedInvoice.ref}...`);
             
-            // Construire les paramu00e8tres pour la requ00eate
+            // Construire les paramètres pour la requête
             const url = `${process.env.DOLIBARR_API_URL}/documents/download`;
             const params = {
               modulepart: 'invoice',
@@ -675,14 +683,14 @@ export const SyncService = {
                 'Accept': 'application/json',
                 'DOLAPIKEY': process.env.DOLIBARR_API_KEY
               },
-              responseType: 'arraybuffer' // Important pour ru00e9cupu00e9rer les donnu00e9es binaires
+              responseType: 'arraybuffer' // Important pour récupérer les données binaires
             });
             
             // Stocker le PDF dans Firebase Storage
             const pdfData = response.data;
             const pdfResult = await FirestoreStorageService.uploadInvoicePdf(updatedInvoice.id, pdfData);
             
-            // Mettre u00e0 jour la facture dans Firestore avec l'URL du PDF
+            // Mettre à jour la facture dans Firestore avec l'URL du PDF
             if (pdfResult.success) {
               const invoiceRef = db.collection('invoices').doc(updatedInvoice.id.toString());
               
@@ -702,7 +710,7 @@ export const SyncService = {
                 url: pdfResult.url,
                 detailsUpdated: updateDetails
               });
-              console.log(`PDF de la facture ${updatedInvoice.id} (${updatedInvoice.ref}) synchronisu00e9 avec succu00e8s (${count + 1}/${invoices.length})`);
+              console.log(`PDF de la facture ${updatedInvoice.id} (${updatedInvoice.ref}) synchronisé avec succès (${count + 1}/${invoices.length})`);
             } else {
               errorCount++;
               errors.push({
@@ -729,7 +737,7 @@ export const SyncService = {
       
       return {
         success: true,
-        message: `${successCount} PDFs de factures synchronisu00e9s avec succu00e8s, ${errorCount} u00e9checs`,
+        message: `${successCount} PDFs de factures synchronisés avec succès, ${errorCount} échecs`,
         totalCount: invoices.length,
         successCount,
         errorCount,
@@ -749,21 +757,21 @@ export const SyncService = {
   
   /**
    * Synchronise toutes les factures de Firestore avec leurs PDFs depuis le serveur FTP
-   * @param {boolean} updateDetails - Si true, met u00e0 jour les du00e9tails des factures depuis Dolibarr
-   * @returns {Promise} - Promesse contenant le ru00e9sultat de l'opu00e9ration
+   * @param {boolean} updateDetails - Si true, met à jour les détails des factures depuis Dolibarr
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
    */
   syncAllInvoicePdfsFromFtp: async (updateDetails = true) => {
     try {
-      console.log('Du00e9marrage de la synchronisation des PDFs des factures depuis FTP...');
+      console.log('Démarrage de la synchronisation des PDFs des factures depuis FTP...');
       
-      // 1. Ru00e9cupu00e9rer toutes les factures depuis Firestore
+      // 1. Récupérer toutes les factures depuis Firestore
       const db = getFirestore();
       const invoicesSnapshot = await db.collection('invoices').get();
       
       if (invoicesSnapshot.empty) {
         return {
           success: false,
-          message: 'Aucune facture trouvu00e9e dans Firestore',
+          message: 'Aucune facture trouvée dans Firestore',
         };
       }
       
@@ -775,7 +783,7 @@ export const SyncService = {
         });
       });
       
-      console.log(`${invoices.length} factures ru00e9cupu00e9ru00e9es depuis Firestore`);
+      console.log(`${invoices.length} factures récupérées depuis Firestore`);
       
       // 2. Synchroniser avec Firebase Storage
       let count = 0;
@@ -792,19 +800,19 @@ export const SyncService = {
         const batch = invoices.slice(i, i + batchSize);
         console.log(`Traitement du lot ${i / batchSize + 1}/${Math.ceil(invoices.length / batchSize)}...`);
         
-        // Traiter les factures en su00e9quentiel pour u00e9viter de surcharger le serveur FTP
+        // Traiter les factures en séquentiel pour éviter de surcharger le serveur FTP
         for (const invoice of batch) {
           try {
-            // Si updateDetails est true, ru00e9cupu00e9rer les du00e9tails de la facture depuis Dolibarr
+            // Si updateDetails est true, récupérer les détails de la facture depuis Dolibarr
             let updatedInvoice = invoice;
             let dolibarrInvoice = null;
             
             if (updateDetails) {
               try {
-                console.log(`Ru00e9cupu00e9ration des du00e9tails de la facture ${invoice.id} depuis Dolibarr...`);
+                console.log(`Récupération des détails de la facture ${invoice.id} depuis Dolibarr...`);
                 dolibarrInvoice = await DolibarrService.getInvoiceById(invoice.id);
                 
-                // Mettre u00e0 jour les du00e9tails de la facture dans Firestore
+                // Mettre à jour les détails de la facture dans Firestore
                 if (dolibarrInvoice && dolibarrInvoice.id) {
                   const invoiceRef = db.collection('invoices').doc(invoice.id.toString());
                   
@@ -820,38 +828,38 @@ export const SyncService = {
                   filteredInvoice.lastSyncedAt = Date.now();
                   
                   await invoiceRef.update(filteredInvoice);
-                  console.log(`Du00e9tails de la facture ${invoice.id} mis u00e0 jour dans Firestore`);
+                  console.log(`Détails de la facture ${invoice.id} mis à jour dans Firestore`);
                   
-                  // Utiliser les du00e9tails mis u00e0 jour pour la suite
+                  // Utiliser les détails mis à jour pour la suite
                   updatedInvoice = {
                     ...invoice,
                     ...filteredInvoice
                   };
                 }
               } catch (detailsError) {
-                console.warn(`Erreur lors de la ru00e9cupu00e9ration des du00e9tails de la facture ${invoice.id}:`, detailsError.message);
-                // Continuer avec les donnu00e9es existantes
+                console.warn(`Erreur lors de la récupération des détails de la facture ${invoice.id}:`, detailsError.message);
+                // Continuer avec les données existantes
               }
             }
             
-            // Vu00e9rifier si la facture a une ru00e9fu00e9rence valide
+            // Vérifier si la facture a une référence valide
             if (!updatedInvoice.ref || updatedInvoice.ref.includes('(PROV)')) {
-              console.warn(`La facture ${updatedInvoice.id} n'a pas de ru00e9fu00e9rence valide (${updatedInvoice.ref || 'non du00e9finie'}), impossible de ru00e9cupu00e9rer son PDF`);
+              console.warn(`La facture ${updatedInvoice.id} n'a pas de référence valide (${updatedInvoice.ref || 'non définie'}), impossible de récupérer son PDF`);
               count++;
               errorCount++;
               errors.push({
                 id: updatedInvoice.id,
-                ref: updatedInvoice.ref || 'non du00e9finie',
-                error: 'Ru00e9fu00e9rence manquante ou provisoire'
+                ref: updatedInvoice.ref || 'non définie',
+                error: 'Référence manquante ou provisoire'
               });
               continue;
             }
             
-            // Ru00e9cupu00e9rer le PDF de la facture depuis FTP en utilisant la ru00e9fu00e9rence
-            console.log(`Ru00e9cupu00e9ration du PDF pour la facture ${updatedInvoice.id} avec la ru00e9fu00e9rence ${updatedInvoice.ref} depuis FTP...`);
+            // Récupérer le PDF de la facture depuis FTP en utilisant la référence
+            console.log(`Récupération du PDF pour la facture ${updatedInvoice.id} avec la référence ${updatedInvoice.ref} depuis FTP...`);
             
             try {
-              // Vu00e9rifier d'abord si le PDF existe sur le serveur FTP
+              // Vérifier d'abord si le PDF existe sur le serveur FTP
               const pdfExists = await FtpService.checkInvoicePdfExists(updatedInvoice.ref);
               
               if (!pdfExists) {
@@ -861,18 +869,18 @@ export const SyncService = {
                 errors.push({
                   id: updatedInvoice.id,
                   ref: updatedInvoice.ref,
-                  error: 'PDF non trouvu00e9 sur le serveur FTP'
+                  error: 'PDF non trouvé sur le serveur FTP'
                 });
                 continue;
               }
               
-              // Ru00e9cupu00e9rer le PDF depuis FTP
+              // Récupérer le PDF depuis FTP
               const pdfData = await FtpService.getInvoicePdf(updatedInvoice.ref);
               
               // Stocker le PDF dans Firebase Storage
               const pdfResult = await FirestoreStorageService.uploadInvoicePdf(updatedInvoice.id, pdfData);
               
-              // Mettre u00e0 jour la facture dans Firestore avec l'URL du PDF
+              // Mettre à jour la facture dans Firestore avec l'URL du PDF
               if (pdfResult.success) {
                 const invoiceRef = db.collection('invoices').doc(updatedInvoice.id.toString());
                 
@@ -892,7 +900,7 @@ export const SyncService = {
                   url: pdfResult.url,
                   detailsUpdated: updateDetails
                 });
-                console.log(`PDF de la facture ${updatedInvoice.id} (${updatedInvoice.ref}) synchronisu00e9 avec succu00e8s (${count + 1}/${invoices.length})`);
+                console.log(`PDF de la facture ${updatedInvoice.id} (${updatedInvoice.ref}) synchronisé avec succès (${count + 1}/${invoices.length})`);
               } else {
                 errorCount++;
                 errors.push({
@@ -903,7 +911,7 @@ export const SyncService = {
                 console.warn(`Erreur lors du stockage du PDF de la facture ${updatedInvoice.id} (${updatedInvoice.ref})`);
               }
             } catch (ftpError) {
-              console.error(`Erreur lors de la ru00e9cupu00e9ration du PDF de la facture ${updatedInvoice.ref} depuis FTP:`, ftpError.message);
+              console.error(`Erreur lors de la récupération du PDF de la facture ${updatedInvoice.ref} depuis FTP:`, ftpError.message);
               errorCount++;
               errors.push({
                 id: updatedInvoice.id,
@@ -928,7 +936,7 @@ export const SyncService = {
       
       return {
         success: true,
-        message: `${successCount} PDFs de factures synchronisu00e9s avec succu00e8s, ${errorCount} u00e9checs`,
+        message: `${successCount} PDFs de factures synchronisés avec succès, ${errorCount} échecs`,
         totalCount: invoices.length,
         successCount,
         errorCount,
