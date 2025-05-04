@@ -45,11 +45,12 @@ export const FtpService = {
     try {
       client = await FtpService.createClient();
       
-      // Les dossiers des factures sont dans le répertoire /facture/
-      console.log(`Recherche du dossier de facture ${invoiceRef} dans /facture/...`);
+      // Les dossiers des factures sont dans le répertoire /facture à la racine
+      const invoicePath = '/facture';
+      console.log(`Recherche du dossier de facture ${invoiceRef} dans ${invoicePath}...`);
       
       // Aller dans le répertoire facture
-      await client.cd('/facture');
+      await client.cd(invoicePath);
       
       // Lister les dossiers pour trouver celui qui correspond à la référence
       const list = await client.list();
@@ -58,7 +59,7 @@ export const FtpService = {
       const matchingFolder = list.find(item => item.type === 2 && item.name === invoiceRef); // type 2 = dossier
       
       if (!matchingFolder) {
-        throw new Error(`Dossier pour la facture ${invoiceRef} non trouvé dans /facture/ sur le serveur FTP`);
+        throw new Error(`Dossier pour la facture ${invoiceRef} non trouvé dans ${invoicePath} sur le serveur FTP`);
       }
       
       console.log(`Dossier trouvé pour la facture ${invoiceRef}: ${matchingFolder.name}`);
@@ -70,10 +71,16 @@ export const FtpService = {
       const files = await client.list();
       
       // Chercher le fichier PDF
-      const pdfFile = files.find(item => item.type === 1 && item.name.toLowerCase().endsWith('.pdf')); // type 1 = fichier
+      // D'abord, essayer de trouver un fichier qui correspond exactement à la référence de la facture
+      let pdfFile = files.find(item => item.type === 1 && item.name === `${invoiceRef}.pdf`);
+      
+      // Si on ne trouve pas de fichier correspondant exactement, chercher n'importe quel fichier PDF
+      if (!pdfFile) {
+        pdfFile = files.find(item => item.type === 1 && item.name.toLowerCase().endsWith('.pdf'));
+      }
       
       if (!pdfFile) {
-        throw new Error(`Fichier PDF non trouvé dans le dossier /facture/${invoiceRef}`);
+        throw new Error(`Fichier PDF non trouvé dans le dossier ${invoicePath}/${invoiceRef}`);
       }
       
       console.log(`Fichier PDF trouvé pour la facture ${invoiceRef}: ${pdfFile.name}`);
@@ -157,8 +164,12 @@ export const FtpService = {
     try {
       client = await FtpService.createClient();
       
-      // Les dossiers des factures sont directement à la racine du serveur FTP
-      console.log(`Vérification de l'existence du dossier ${invoiceRef} à la racine...`);
+      // Les dossiers des factures sont dans le répertoire /facture
+      const invoicePath = '/facture';
+      console.log(`Vérification de l'existence du dossier ${invoiceRef} dans ${invoicePath}...`);
+      
+      // Aller dans le répertoire facture
+      await client.cd(invoicePath);
       
       // Lister les dossiers pour trouver celui qui correspond à la référence
       const list = await client.list();
@@ -178,10 +189,16 @@ export const FtpService = {
       const files = await client.list();
       
       // Chercher le fichier PDF
-      const pdfFile = files.find(item => item.type === 1 && item.name.toLowerCase().endsWith('.pdf')); // type 1 = fichier
+      // D'abord, essayer de trouver un fichier qui correspond exactement à la référence de la facture
+      let pdfFile = files.find(item => item.type === 1 && item.name === `${invoiceRef}.pdf`);
+      
+      // Si on ne trouve pas de fichier correspondant exactement, chercher n'importe quel fichier PDF
+      if (!pdfFile) {
+        pdfFile = files.find(item => item.type === 1 && item.name.toLowerCase().endsWith('.pdf'));
+      }
       
       if (!pdfFile) {
-        console.log(`Fichier PDF non trouvé dans le dossier ${invoiceRef}`);
+        console.log(`Fichier PDF non trouvé dans le dossier ${invoicePath}/${invoiceRef}`);
         return false;
       }
       

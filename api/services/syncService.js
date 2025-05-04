@@ -3,6 +3,7 @@ import { FirestoreThirdPartyService } from './firebase/thirdPartyService.js';
 import { FirestoreInvoiceService } from './firebase/invoiceService.js';
 import { FirestoreProductService } from './firebase/productService.js';
 import { FirestoreStorageService } from './firebase/storageService.js';
+import { FirestoreContactService } from './firebase/contactService.js';
 import axios from 'axios';
 import { getFirestore } from 'firebase-admin/firestore';
 
@@ -658,7 +659,7 @@ export const SyncService = {
               });
               
               // Synchroniser quand même la facture sans PDF
-              await FirestoreInvoiceService.syncInvoiceWithDetails(updatedInvoice, includeDetails);
+              await FirestoreInvoiceService.syncInvoiceWithDetails(updatedInvoice, updateDetails);
               
               continue;
             }
@@ -710,15 +711,16 @@ export const SyncService = {
                 url: pdfResult.url,
                 detailsUpdated: updateDetails
               });
-              console.log(`PDF de la facture ${updatedInvoice.id} (${updatedInvoice.ref}) synchronisé avec succès (${count + 1}/${invoices.length})`);
+              console.log(`Facture ${updatedInvoice.id} (${updatedInvoice.ref}) synchronisée avec succès (${count + 1}/${invoices.length})`);
             } else {
               errorCount++;
+              const errorMessage = pdfResult ? pdfResult.error : 'Erreur inconnue';
               errors.push({
                 id: updatedInvoice.id,
                 ref: updatedInvoice.ref,
-                error: 'Erreur lors du stockage du PDF'
+                error: errorMessage
               });
-              console.warn(`Erreur lors du stockage du PDF de la facture ${updatedInvoice.id} (${updatedInvoice.ref})`);
+              console.warn(`Erreur lors de la synchronisation du PDF de la facture ${updatedInvoice.id} (${updatedInvoice.ref}): ${errorMessage}`);
             }
             
             count++;
@@ -900,7 +902,7 @@ export const SyncService = {
                   url: pdfResult.url,
                   detailsUpdated: updateDetails
                 });
-                console.log(`PDF de la facture ${updatedInvoice.id} (${updatedInvoice.ref}) synchronisé avec succès (${count + 1}/${invoices.length})`);
+                console.log(`Facture ${updatedInvoice.id} (${updatedInvoice.ref}) synchronisée avec succès (${count + 1}/${invoices.length})`);
               } else {
                 errorCount++;
                 errors.push({
@@ -949,6 +951,325 @@ export const SyncService = {
       return {
         success: false,
         message: `Erreur lors de la synchronisation: ${error.message}`,
+        error: error.message
+      };
+    }
+  },
+  
+  /**
+   * Synchronise tous les contacts de Dolibarr vers Firestore
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
+   */
+  syncAllContacts: async (includeDetails = true) => {
+    try {
+      console.log('Démarrage de la synchronisation des contacts...');
+      
+      // 1. Récupérer les données depuis Dolibarr
+      const contacts = await DolibarrService.getContacts();
+      console.log(`${contacts.length} contacts récupérés depuis Dolibarr`);
+      
+      // 2. Synchroniser avec Firestore
+      let count = 0;
+      let successCount = 0;
+      let errorCount = 0;
+      const errors = [];
+      const results = [];
+      const batchSize = 20; // Traiter les contacts par lots de 20
+      
+      for (let i = 0; i < contacts.length; i += batchSize) {
+        const batch = contacts.slice(i, i + batchSize);
+        console.log(`Traitement du lot ${i / batchSize + 1}/${Math.ceil(contacts.length / batchSize)}...`);
+        
+        // Traiter les contacts en parallèle pour plus d'efficacité
+        const batchResults = await Promise.all(batch.map(async (contact) => {
+          try {
+            // Si includeDetails est true, récupérer les détails du contact depuis Dolibarr
+            let contactData = contact;
+            
+            if (includeDetails) {
+              try {
+                contactData = await DolibarrService.getContactById(contact.id);
+              } catch (detailsError) {
+                console.warn(`Erreur lors de la récupération des détails du contact ${contact.id}:`, detailsError.message);
+                // Continuer avec les données de base
+              }
+            }
+            
+            // Synchroniser avec Firestore
+            const result = await FirestoreContactService.syncContact(contactData);
+            
+            if (result.success) {
+              successCount++;
+              return {
+                success: true,
+                id: contact.id,
+                message: `Contact ${contact.id} synchronisé avec succès`
+              };
+            } else {
+              errorCount++;
+              errors.push({
+                id: contact.id,
+                error: result.error || 'Erreur inconnue'
+              });
+              return {
+                success: false,
+                id: contact.id,
+                error: result.error || 'Erreur inconnue'
+              };
+            }
+          } catch (error) {
+            errorCount++;
+            errors.push({
+              id: contact.id,
+              error: error.message
+            });
+            return {
+              success: false,
+              id: contact.id,
+              error: error.message
+            };
+          }
+        }));
+        
+        results.push(...batchResults);
+        count += batch.length;
+        console.log(`Progression: ${count}/${contacts.length} contacts traités`);
+      }
+      
+      console.log(`Synchronisation terminée: ${successCount} succès, ${errorCount} erreurs`);
+      
+      return {
+        success: true,
+        total: contacts.length,
+        processed: count,
+        success_count: successCount,
+        error_count: errorCount,
+        errors: errors,
+        results: results
+      };
+    } catch (error) {
+      console.error('Erreur lors de la synchronisation des contacts:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  },
+  
+  /**
+   * Synchronise un contact spécifique de Dolibarr vers Firestore
+   * @param {string} id - ID du contact à synchroniser
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
+   */
+  syncContact: async (id, includeDetails = true) => {
+    try {
+      console.log(`Démarrage de la synchronisation du contact ${id}...`);
+      
+      // 1. Récupérer les données depuis Dolibarr
+      const contact = await DolibarrService.getContactById(id);
+      
+      if (!contact || !contact.id) {
+        throw new Error(`Contact avec l'ID ${id} non trouvé dans Dolibarr`);
+      }
+      
+      // 2. Synchroniser avec Firestore
+      const result = await FirestoreContactService.syncContact(contact);
+      
+      if (result.success) {
+        console.log(`Contact ${id} synchronisé avec succès`);
+        return {
+          success: true,
+          id: id,
+          message: `Contact ${id} synchronisé avec succès`
+        };
+      } else {
+        console.error(`Erreur lors de la synchronisation du contact ${id}:`, result.error);
+        return {
+          success: false,
+          id: id,
+          error: result.error || 'Erreur inconnue'
+        };
+      }
+    } catch (error) {
+      console.error(`Erreur lors de la synchronisation du contact ${id}:`, error);
+      return {
+        success: false,
+        id: id,
+        error: error.message
+      };
+    }
+  },
+  
+  /**
+   * Compare les données entre Dolibarr et Firestore pour un contact spécifique
+   * @param {string} id - ID du contact à comparer
+   * @returns {Promise} - Promesse contenant le résultat de la comparaison
+   */
+  compareContact: async (id) => {
+    try {
+      console.log(`Comparaison des données du contact ${id} entre Dolibarr et Firestore...`);
+      
+      // 1. Récupérer les données depuis Dolibarr
+      const dolibarrContact = await DolibarrService.getContactById(id);
+      
+      if (!dolibarrContact || !dolibarrContact.id) {
+        throw new Error(`Contact avec l'ID ${id} non trouvé dans Dolibarr`);
+      }
+      
+      // 2. Récupérer les données depuis Firestore
+      let firestoreContact;
+      try {
+        firestoreContact = await FirestoreContactService.getContactById(id);
+      } catch (error) {
+        return {
+          success: false,
+          id: id,
+          exists_in_dolibarr: true,
+          exists_in_firestore: false,
+          error: `Contact non trouvé dans Firestore: ${error.message}`
+        };
+      }
+      
+      // 3. Comparer les données
+      const differences = {};
+      let hasDifferences = false;
+      
+      // Comparer les champs principaux
+      const fieldsToCompare = [
+        'id', 'lastname', 'firstname', 'address', 'zip', 'town', 'phone', 'phone_mobile',
+        'fax', 'email', 'birth', 'statut', 'fk_soc', 'poste'
+      ];
+      
+      for (const field of fieldsToCompare) {
+        if (dolibarrContact[field] !== firestoreContact[field]) {
+          differences[field] = {
+            dolibarr: dolibarrContact[field],
+            firestore: firestoreContact[field]
+          };
+          hasDifferences = true;
+        }
+      }
+      
+      return {
+        success: true,
+        id: id,
+        exists_in_dolibarr: true,
+        exists_in_firestore: true,
+        has_differences: hasDifferences,
+        differences: differences,
+        dolibarr_data: dolibarrContact,
+        firestore_data: firestoreContact
+      };
+    } catch (error) {
+      console.error(`Erreur lors de la comparaison du contact ${id}:`, error);
+      return {
+        success: false,
+        id: id,
+        error: error.message
+      };
+    }
+  },
+  
+  /**
+   * Synchronise les contacts d'un tiers spécifique de Dolibarr vers Firestore
+   * @param {string} thirdPartyId - ID du tiers dont on veut synchroniser les contacts
+   * @param {boolean} includeDetails - Si true, inclut les informations supplémentaires
+   * @returns {Promise} - Promesse contenant le résultat de l'opération
+   */
+  syncThirdPartyContacts: async (thirdPartyId, includeDetails = true) => {
+    try {
+      console.log(`Démarrage de la synchronisation des contacts du tiers ${thirdPartyId}...`);
+      
+      // 1. Récupérer les contacts du tiers depuis Dolibarr
+      const contacts = await DolibarrService.getThirdPartyContacts(thirdPartyId);
+      console.log(`${contacts.length} contacts récupérés pour le tiers ${thirdPartyId}`);
+      
+      if (contacts.length === 0) {
+        return {
+          success: true,
+          message: `Aucun contact trouvé pour le tiers ${thirdPartyId}`,
+          total: 0,
+          processed: 0,
+          success_count: 0,
+          error_count: 0
+        };
+      }
+      
+      // 2. Synchroniser chaque contact avec Firestore
+      let successCount = 0;
+      let errorCount = 0;
+      const errors = [];
+      const results = [];
+      
+      for (const contact of contacts) {
+        try {
+          // Si includeDetails est true, récupérer les détails du contact depuis Dolibarr
+          let contactData = contact;
+          
+          if (includeDetails) {
+            try {
+              contactData = await DolibarrService.getContactById(contact.id);
+            } catch (detailsError) {
+              console.warn(`Erreur lors de la récupération des détails du contact ${contact.id}:`, detailsError.message);
+              // Continuer avec les données de base
+            }
+          }
+          
+          // Synchroniser avec Firestore
+          const result = await FirestoreContactService.syncContact(contactData);
+          
+          if (result.success) {
+            successCount++;
+            results.push({
+              success: true,
+              id: contact.id,
+              message: `Contact ${contact.id} synchronisé avec succès`
+            });
+          } else {
+            errorCount++;
+            errors.push({
+              id: contact.id,
+              error: result.error || 'Erreur inconnue'
+            });
+            results.push({
+              success: false,
+              id: contact.id,
+              error: result.error || 'Erreur inconnue'
+            });
+          }
+        } catch (error) {
+          errorCount++;
+          errors.push({
+            id: contact.id,
+            error: error.message
+          });
+          results.push({
+            success: false,
+            id: contact.id,
+            error: error.message
+          });
+        }
+      }
+      
+      console.log(`Synchronisation terminée: ${successCount} succès, ${errorCount} erreurs`);
+      
+      return {
+        success: true,
+        third_party_id: thirdPartyId,
+        total: contacts.length,
+        processed: contacts.length,
+        success_count: successCount,
+        error_count: errorCount,
+        errors: errors,
+        results: results
+      };
+    } catch (error) {
+      console.error(`Erreur lors de la synchronisation des contacts du tiers ${thirdPartyId}:`, error);
+      return {
+        success: false,
+        third_party_id: thirdPartyId,
         error: error.message
       };
     }

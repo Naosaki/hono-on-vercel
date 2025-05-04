@@ -479,6 +479,212 @@ export const DolibarrService = {
       console.error('Erreur lors de la création de la facture:', error);
       throw error;
     }
+  },
+
+  /**
+   * Récupérer tous les mouvements de stock
+   * @param {Object} options - Options de filtrage (limit, sortfield, sortorder, product_id, warehouse_id, type)
+   * @returns {Promise<Array>} - Liste des mouvements de stock
+   */
+  getStockMovements: async (options = {}) => {
+    try {
+      const queryParams = new URLSearchParams({
+        limit: options.limit || 100,
+        sortfield: options.sortfield || 'm.rowid',
+        sortorder: options.sortorder || 'DESC',
+        ...options
+      });
+
+      const response = await dolibarrAPI.get('/stockmovements', { params: queryParams });
+      return response.data;
+    } catch (error) {
+      console.error('Erreur lors de la récupération des mouvements de stock:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Récupérer un mouvement de stock par son ID
+   * @param {string} id - ID du mouvement de stock
+   * @returns {Promise<Object>} - Détails du mouvement de stock
+   */
+  getStockMovementById: async (id) => {
+    try {
+      const response = await dolibarrAPI.get(`/stockmovements/${id}`);
+      return response.data;
+    } catch (error) {
+      console.error(`Erreur lors de la récupération du mouvement de stock ${id}:`, error);
+      throw error;
+    }
+  },
+
+  /**
+   * Créer un nouveau mouvement de stock
+   * @param {Object} stockMovement - Données du mouvement de stock
+   * @returns {Promise<Object>} - Résultat de la création
+   */
+  createStockMovement: async (stockMovement) => {
+    try {
+      const response = await dolibarrAPI.post('/stockmovements', stockMovement);
+      return response.data;
+    } catch (error) {
+      console.error('Erreur lors de la création du mouvement de stock:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Récupérer les mouvements de stock d'un produit
+   * @param {string} productId - ID du produit
+   * @returns {Promise<Array>} - Liste des mouvements de stock du produit
+   */
+  getProductStockMovements: async (productId) => {
+    try {
+      const response = await dolibarrAPI.get(`/products/${productId}/stockmovements`);
+      return response.data;
+    } catch (error) {
+      console.error(`Erreur lors de la récupération des mouvements de stock du produit ${productId}:`, error);
+      throw error;
+    }
+  },
+
+  /**
+   * Récupérer les mouvements de stock d'un entrepôt
+   * @param {string} warehouseId - ID de l'entrepôt
+   * @returns {Promise<Array>} - Liste des mouvements de stock de l'entrepôt
+   */
+  getWarehouseStockMovements: async (warehouseId) => {
+    try {
+      const response = await dolibarrAPI.get(`/warehouses/${warehouseId}/stockmovements`);
+      return response.data;
+    } catch (error) {
+      console.error(`Erreur lors de la récupération des mouvements de stock de l'entrepôt ${warehouseId}:`, error);
+      throw error;
+    }
+  },
+
+  /**
+   * Récupérer les entrepôts
+   * @returns {Promise<Array>} - Liste des entrepôts
+   */
+  getWarehouses: async () => {
+    try {
+      const response = await dolibarrAPI.get('/warehouses');
+      return response.data;
+    } catch (error) {
+      console.error('Erreur lors de la récupération des entrepôts:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Récupérer un entrepôt par son ID
+   * @param {string} id - ID de l'entrepôt
+   * @returns {Promise<Object>} - Détails de l'entrepôt
+   */
+  getWarehouseById: async (id) => {
+    try {
+      const response = await dolibarrAPI.get(`/warehouses/${id}`);
+      return response.data;
+    } catch (error) {
+      console.error(`Erreur lors de la récupération de l'entrepôt ${id}:`, error);
+      throw error;
+    }
+  },
+
+  /**
+   * Récupérer tous les contacts depuis Dolibarr
+   * @param {Object} params - Paramètres de filtrage
+   * @returns {Promise<Array>} - Liste des contacts
+   */
+  getContacts: async (params = {}) => {
+    try {
+      // Utiliser une limite plus élevée pour récupérer tous les contacts en une seule requête
+      const defaultParams = { limit: 1000, sortfield: 't.rowid', sortorder: 'ASC' };
+      const mergedParams = { ...defaultParams, ...params };
+      
+      const response = await dolibarrAPI.get('/contacts', { params: mergedParams });
+      return response.data;
+    } catch (error) {
+      console.error('Erreur lors de la récupération des contacts:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Récupérer un contact par son ID depuis Dolibarr
+   * @param {string} id - ID du contact
+   * @returns {Promise<Object>} - Données du contact
+   */
+  getContactById: async (id) => {
+    try {
+      const response = await dolibarrAPI.get(`/contacts/${id}`);
+      return response.data;
+    } catch (error) {
+      console.error(`Erreur lors de la récupération du contact ${id}:`, error);
+      throw error;
+    }
+  },
+
+  /**
+   * Récupérer les contacts d'un tiers spécifique depuis Dolibarr
+   * @param {string} thirdPartyId - ID du tiers
+   * @returns {Promise<Array>} - Liste des contacts du tiers
+   */
+  getThirdPartyContacts: async (thirdPartyId) => {
+    try {
+      const response = await dolibarrAPI.get(`/thirdparties/${thirdPartyId}/contacts`);
+      return response.data;
+    } catch (error) {
+      console.error(`Erreur lors de la récupération des contacts du tiers ${thirdPartyId}:`, error);
+      throw error;
+    }
+  },
+
+  /**
+   * Créer un nouveau contact dans Dolibarr
+   * @param {Object} contactData - Données du contact à créer
+   * @returns {Promise<Object>} - Résultat de la création
+   */
+  createContact: async (contactData) => {
+    try {
+      const response = await dolibarrAPI.post('/contacts', contactData);
+      return response.data;
+    } catch (error) {
+      console.error('Erreur lors de la création du contact:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Mettre à jour un contact dans Dolibarr
+   * @param {string} id - ID du contact à mettre à jour
+   * @param {Object} contactData - Données à mettre à jour
+   * @returns {Promise<Object>} - Résultat de la mise à jour
+   */
+  updateContact: async (id, contactData) => {
+    try {
+      const response = await dolibarrAPI.put(`/contacts/${id}`, contactData);
+      return response.data;
+    } catch (error) {
+      console.error(`Erreur lors de la mise à jour du contact ${id}:`, error);
+      throw error;
+    }
+  },
+
+  /**
+   * Supprimer un contact dans Dolibarr
+   * @param {string} id - ID du contact à supprimer
+   * @returns {Promise<Object>} - Résultat de la suppression
+   */
+  deleteContact: async (id) => {
+    try {
+      const response = await dolibarrAPI.delete(`/contacts/${id}`);
+      return response.data;
+    } catch (error) {
+      console.error(`Erreur lors de la suppression du contact ${id}:`, error);
+      throw error;
+    }
   }
 };
 
