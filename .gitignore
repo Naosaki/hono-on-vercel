@@ -31,3 +31,7 @@ lerna-debug.log*
 
 # Firebase service account
 /config/*.json
+
+# Documentation sensible
+hono-day.md
+hono-point.md
