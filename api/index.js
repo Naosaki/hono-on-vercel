@@ -9,6 +9,10 @@ import { FirestoreStorageService } from './services/firebase/storageService.js'
 import { FirestoreContactService } from './services/firebase/contactService.js'
 import { FtpService } from './services/ftpService.js'
 import { FirestoreStockMovementService } from './services/firebase/stockMovementService.js'
+import { FirestoreTicketService } from './services/firebase/ticketService.js'
+import { FirestoreProposalService } from './services/firebase/proposalService.js'
+import { FirestoreUserService } from './services/firebase/userService.js'
+import { FirestoreBankAccountService } from './services/firebase/bankAccountService.js'
 
 const app = new Hono().basePath('/api')
 
@@ -461,6 +465,17 @@ app.get('/sync/invoices/:id/pdf', async (c) => {
     return c.json(result);
   } catch (error) {
     return c.json({ success: false, error: error.message }, 500);
+  }
+})
+
+app.delete('/invoices/:id/pdf', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await FirestoreStorageService.deleteInvoicePdf(id);
+    
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
   }
 })
 
@@ -1016,9 +1031,16 @@ app.get('/sync/warehouse/:id/stock-sheets', async (c) => {
 app.get('/sync/stockmovements', async (c) => {
   try {
     const includeDetails = c.req.query('details') === 'false' ? false : true;
+    const useAlternative = c.req.query('alternative') === 'true' ? true : false;
+    
+    console.log('Début de la synchronisation des mouvements de stock...');
     
     // Récupérer tous les mouvements de stock depuis Dolibarr
-    const stockMovements = await DolibarrService.getStockMovements({ limit: 1000 });
+    // Si useAlternative est true, utiliser directement la méthode alternative
+    const stockMovements = await DolibarrService.getStockMovements({ 
+      limit: 1000,
+      useAlternativeMethod: useAlternative
+    });
     
     console.log(`${stockMovements.length} mouvements de stock récupérés depuis Dolibarr`);
     
@@ -1028,16 +1050,31 @@ app.get('/sync/stockmovements', async (c) => {
       totalProcessed: stockMovements.length,
       totalSynced: 0,
       errors: [],
-      stockMovements: []
+      stockMovements: [],
+      method: useAlternative ? 'alternative' : 'standard'
     };
     
     for (const stockMovement of stockMovements) {
       try {
-        // Si includeDetails est true, récupérer les détails du mouvement de stock
+        // Si includeDetails est true et que nous n'utilisons pas la méthode alternative,
+        // récupérer les détails du mouvement de stock
         let detailedStockMovement = stockMovement;
         
-        if (includeDetails) {
-          detailedStockMovement = await DolibarrService.getStockMovementById(stockMovement.id);
+        if (includeDetails && !useAlternative && stockMovement.id) {
+          try {
+            // Utiliser le mécanisme de retry pour récupérer les détails
+            detailedStockMovement = await DolibarrService.retryApiCall(
+              async () => {
+                const response = await DolibarrService.getStockMovementById(stockMovement.id);
+                return response;
+              },
+              2, // maxRetries
+              500 // initialDelay
+            );
+          } catch (detailError) {
+            console.warn(`Impossible de récupérer les détails du mouvement ${stockMovement.id}, utilisation des données de base:`, detailError.message);
+            // Continuer avec les données de base
+          }
         }
         
         // Synchroniser le mouvement de stock avec Firestore
@@ -1078,7 +1115,11 @@ app.get('/sync/stockmovements', async (c) => {
     
     return c.json(results);
   } catch (error) {
-    return c.json({ error: error.message }, 500);
+    console.error('Erreur globale lors de la synchronisation des mouvements de stock:', error);
+    return c.json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    }, 500);
   }
 });
 
@@ -1086,8 +1127,35 @@ app.get('/sync/stockmovements/:id', async (c) => {
   try {
     const id = c.req.param('id');
     
-    // Récupérer le mouvement de stock depuis Dolibarr
-    const stockMovement = await DolibarrService.getStockMovementById(id);
+    console.log(`Début de la synchronisation du mouvement de stock ${id}...`);
+    
+    // Récupérer le mouvement de stock depuis Dolibarr avec retry
+    let stockMovement;
+    try {
+      stockMovement = await DolibarrService.retryApiCall(
+        async () => {
+          return await DolibarrService.getStockMovementById(id);
+        },
+        3, // maxRetries
+        1000 // initialDelay
+      );
+    } catch (error) {
+      // Si l'erreur persiste après les retries, essayer de récupérer le mouvement depuis Firestore
+      console.warn(`Impossible de récupérer le mouvement de stock ${id} depuis Dolibarr après plusieurs tentatives. Recherche dans Firestore...`);
+      
+      const existingMovement = await FirestoreStockMovementService.getStockMovementById(id);
+      if (!existingMovement) {
+        return c.json({
+          success: false,
+          message: `Le mouvement de stock ${id} n'a pas pu être trouvé dans Dolibarr ni dans Firestore`,
+          error: error.message
+        }, 404);
+      }
+      
+      // Utiliser les données existantes de Firestore
+      stockMovement = existingMovement;
+      console.log(`Mouvement de stock ${id} récupéré depuis Firestore`);
+    }
     
     // Synchroniser le mouvement de stock avec Firestore
     const syncResult = await FirestoreStockMovementService.syncStockMovement(stockMovement);
@@ -1095,10 +1163,15 @@ app.get('/sync/stockmovements/:id', async (c) => {
     return c.json({
       success: syncResult.success,
       message: syncResult.message,
-      stockMovement: syncResult.stockMovement
+      stockMovement: syncResult.stockMovement,
+      source: stockMovement.sync_source || 'dolibarr'
     });
   } catch (error) {
-    return c.json({ error: error.message }, 500);
+    console.error(`Erreur lors de la synchronisation du mouvement de stock ${c.req.param('id')}:`, error);
+    return c.json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    }, 500);
   }
 });
 
@@ -1305,6 +1378,879 @@ app.get('/compare/contacts/:id', async (c) => {
     return c.json({ error: error.message }, 500);
   }
 })
+
+// Routes pour les tickets via Dolibarr
+app.get('/tickets', async (c) => {
+  try {
+    const tickets = await DolibarrService.getTickets();
+    return c.json(tickets);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/tickets/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const ticket = await DolibarrService.getTicketById(id);
+    return c.json(ticket);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/tickets/:id/messages', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const messages = await DolibarrService.getTicketMessages(id);
+    return c.json(messages);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/thirdparties/:id/tickets', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const tickets = await DolibarrService.getThirdPartyTickets(id);
+    return c.json(tickets);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.post('/tickets', async (c) => {
+  try {
+    const body = await c.req.json();
+    const result = await DolibarrService.createTicket(body);
+    return c.json(result, 201);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.put('/tickets/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const body = await c.req.json();
+    const result = await DolibarrService.updateTicket(id, body);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.post('/tickets/:id/messages', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const body = await c.req.json();
+    const result = await DolibarrService.addTicketMessage(id, body);
+    return c.json(result, 201);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.delete('/tickets/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await DolibarrService.deleteTicket(id);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+// Routes pour les tickets via Firestore
+app.get('/firebase/tickets', async (c) => {
+  try {
+    const result = await FirestoreTicketService.getAllTickets();
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/firebase/tickets/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await FirestoreTicketService.getTicketById(id);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/firebase/tickets/ref/:ref', async (c) => {
+  try {
+    const ref = c.req.param('ref');
+    const result = await FirestoreTicketService.getTicketByRef(ref);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/firebase/tickets/track/:trackId', async (c) => {
+  try {
+    const trackId = c.req.param('trackId');
+    const result = await FirestoreTicketService.getTicketByTrackId(trackId);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/firebase/thirdparties/:id/tickets', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await FirestoreTicketService.getTicketsByThirdPartyId(id);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.put('/firebase/tickets/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const body = await c.req.json();
+    const result = await FirestoreTicketService.updateTicket(id, body);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.post('/firebase/tickets/:id/messages', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const body = await c.req.json();
+    const result = await FirestoreTicketService.addTicketMessage(id, body);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.delete('/firebase/tickets/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await FirestoreTicketService.deleteTicket(id);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+// Routes pour la synchronisation des tickets
+app.get('/sync/tickets', async (c) => {
+  try {
+    const details = c.req.query('details') === 'false' ? false : true;
+    const messages = c.req.query('messages') === 'true' ? true : false;
+    const result = await SyncService.syncAllTickets(details, messages);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/sync/tickets/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const details = c.req.query('details') === 'false' ? false : true;
+    const messages = c.req.query('messages') === 'true' ? true : false;
+    const result = await SyncService.syncTicket(id, details, messages);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/sync/thirdparties/:id/tickets', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const details = c.req.query('details') === 'false' ? false : true;
+    const messages = c.req.query('messages') === 'true' ? true : false;
+    const result = await SyncService.syncThirdPartyTickets(id, details, messages);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+app.get('/compare/tickets/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await SyncService.compareTicket(id);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+})
+
+// Routes pour les propositions commerciales
+// Récupération des propositions commerciales depuis Dolibarr
+app.get('/proposals', async (c) => {
+  try {
+    const proposals = await DolibarrService.getProposals(c.req.query());
+    return c.json(proposals);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des propositions commerciales:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/proposals/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const proposal = await DolibarrService.getProposalById(id);
+    if (!proposal) {
+      return c.json({ error: `Proposition commerciale ${id} non trouvée` }, 404);
+    }
+    return c.json(proposal);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de la proposition commerciale:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/proposals/:id/lines', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const lines = await DolibarrService.getProposalLines(id);
+    return c.json(lines);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération des lignes de la proposition commerciale:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/proposals/ref/:ref', async (c) => {
+  try {
+    const ref = c.req.param('ref');
+    const proposal = await DolibarrService.getProposalByRef(ref);
+    if (!proposal) {
+      return c.json({ error: `Proposition commerciale avec la référence ${ref} non trouvée` }, 404);
+    }
+    return c.json(proposal);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de la proposition commerciale par référence:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/proposals/ref_ext/:ref_ext', async (c) => {
+  try {
+    const refExt = c.req.param('ref_ext');
+    const proposal = await DolibarrService.getProposalByRefExt(refExt);
+    if (!proposal) {
+      return c.json({ error: `Proposition commerciale avec la référence externe ${refExt} non trouvée` }, 404);
+    }
+    return c.json(proposal);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de la proposition commerciale par référence externe:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Routes pour la synchronisation des propositions commerciales
+app.get('/sync/proposals', async (c) => {
+  try {
+    const includeDetails = c.req.query('details') === 'true';
+    const result = await SyncService.syncAllProposals(includeDetails);
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la synchronisation des propositions commerciales:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/sync/proposals/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const includeDetails = c.req.query('details') === 'true';
+    const result = await SyncService.syncProposal(id, includeDetails);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la synchronisation de la proposition commerciale ${c.req.param('id')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/sync/proposals/:id/pdf', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await SyncService.syncProposalWithPdf(id);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la synchronisation de la proposition commerciale ${c.req.param('id')} avec son PDF:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/sync/proposals/pdfs', async (c) => {
+  try {
+    const result = await SyncService.syncAllProposalsWithPdf();
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la synchronisation des propositions commerciales avec leurs PDFs:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Route pour synchroniser le PDF d'une proposition commerciale spécifique depuis le serveur FTP
+app.get('/sync/proposals/:id/pdf-ftp', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await SyncService.syncProposalPdfFromFtp(id);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la synchronisation du PDF de la proposition commerciale ${c.req.param('id')} depuis le serveur FTP:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Route pour synchroniser tous les PDFs des propositions commerciales depuis Firestore via FTP
+app.get('/sync/firestore/proposals/pdfs-ftp', async (c) => {
+  try {
+    const result = await SyncService.syncAllProposalsPdfsFromFtp();
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la synchronisation des PDFs des propositions commerciales depuis le serveur FTP:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Routes pour l'accès aux propositions commerciales dans Firebase
+app.get('/firebase/proposals', async (c) => {
+  try {
+    const proposals = await FirestoreProposalService.getAllProposals();
+    return c.json(proposals);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des propositions commerciales depuis Firestore:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/proposals/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const proposal = await FirestoreProposalService.getProposalById(id);
+    if (!proposal) {
+      return c.json({ error: `Proposition commerciale ${id} non trouvée dans Firestore` }, 404);
+    }
+    return c.json(proposal);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de la proposition commerciale ${c.req.param('id')} depuis Firestore:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/proposals/ref/:ref', async (c) => {
+  try {
+    const ref = c.req.param('ref');
+    const proposal = await FirestoreProposalService.getProposalByRef(ref);
+    if (!proposal) {
+      return c.json({ error: `Proposition commerciale avec la référence ${ref} non trouvée dans Firestore` }, 404);
+    }
+    return c.json(proposal);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de la proposition commerciale par référence ${c.req.param('ref')} depuis Firestore:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/proposals/thirdparty/:thirdPartyId', async (c) => {
+  try {
+    const thirdPartyId = c.req.param('thirdPartyId');
+    const proposals = await FirestoreProposalService.getProposalsByThirdPartyId(thirdPartyId);
+    return c.json(proposals);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération des propositions commerciales du tiers ${c.req.param('thirdPartyId')} depuis Firestore:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Routes pour les utilisateurs
+app.get('/users', async (c) => {
+  try {
+    const users = await DolibarrService.getUsers();
+    return c.json(users);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des utilisateurs:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.post('/users', async (c) => {
+  try {
+    const userData = await c.req.json();
+    const result = await SyncService.createAndSyncUser(userData);
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la création de l\'utilisateur:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/users/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const user = await DolibarrService.getUserById(id);
+    return c.json(user);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de l'utilisateur ${c.req.param('id')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.put('/users/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const userData = await c.req.json();
+    const result = await SyncService.updateAndSyncUser(id, userData);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la mise à jour de l'utilisateur ${c.req.param('id')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.delete('/users/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await SyncService.deleteAndSyncUser(id);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la suppression de l'utilisateur ${c.req.param('id')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/users/:id/groups', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const groups = await DolibarrService.getUserGroups(id);
+    return c.json(groups);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération des groupes de l'utilisateur ${c.req.param('id')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/users/:id/setGroup/:group', async (c) => {
+  try {
+    const userId = c.req.param('id');
+    const groupId = c.req.param('group');
+    const result = await SyncService.addUserToGroupAndSync(userId, groupId);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de l'ajout de l'utilisateur ${c.req.param('id')} au groupe ${c.req.param('group')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/users/:id/setPassword', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const passwordData = c.req.query();
+    const result = await SyncService.updateUserPassword(id, passwordData);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la mise à jour du mot de passe de l'utilisateur ${c.req.param('id')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/users/email/:email', async (c) => {
+  try {
+    const email = c.req.param('email');
+    const user = await DolibarrService.getUserByEmail(email);
+    return c.json(user);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de l'utilisateur avec l'email ${c.req.param('email')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/users/login/:login', async (c) => {
+  try {
+    const login = c.req.param('login');
+    const user = await DolibarrService.getUserByLogin(login);
+    return c.json(user);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de l'utilisateur avec le login ${c.req.param('login')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/users/info', async (c) => {
+  try {
+    const userInfo = await DolibarrService.getUserInfo();
+    return c.json(userInfo);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des informations supplémentaires de l\'utilisateur:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/users/groups', async (c) => {
+  try {
+    const groups = await DolibarrService.getUserGroupsList();
+    return c.json(groups);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des groupes d\'utilisateurs:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/users/groups/:group', async (c) => {
+  try {
+    const id = c.req.param('group');
+    const group = await DolibarrService.getUserGroupById(id);
+    return c.json(group);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération du groupe d'utilisateurs ${c.req.param('group')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Routes pour la synchronisation des utilisateurs
+app.get('/sync/users', async (c) => {
+  try {
+    const withGroups = c.req.query('withGroups') === 'true';
+    const withDetails = c.req.query('withDetails') === 'true';
+    
+    let result;
+    if (withDetails) {
+      result = await SyncService.syncAllUsersWithDetails();
+    } else {
+      result = await SyncService.syncAllUsers(withGroups);
+    }
+    
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la synchronisation des utilisateurs:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/sync/users/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const withGroups = c.req.query('withGroups') === 'true';
+    const withDetails = c.req.query('withDetails') === 'true';
+    
+    let result;
+    if (withDetails) {
+      result = await SyncService.syncUserWithDetails(id);
+    } else {
+      result = await SyncService.syncUser(id, withGroups);
+    }
+    
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la synchronisation de l'utilisateur ${c.req.param('id')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/sync/usergroups', async (c) => {
+  try {
+    const result = await SyncService.syncAllUserGroups();
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la synchronisation des groupes d\'utilisateurs:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/sync/usergroups/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await SyncService.syncUserGroup(id);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la synchronisation du groupe d'utilisateurs ${c.req.param('id')}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Routes pour l'accès aux utilisateurs dans Firebase
+app.get('/firebase/users', async (c) => {
+  try {
+    const users = await FirestoreUserService.getAllUsers();
+    return c.json(users);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des utilisateurs depuis Firebase:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/users/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const user = await FirestoreUserService.getUserById(id);
+    if (!user) {
+      return c.json({ error: `Utilisateur ${id} non trouvé` }, 404);
+    }
+    return c.json(user);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de l'utilisateur ${c.req.param('id')} depuis Firebase:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/users/login/:login', async (c) => {
+  try {
+    const login = c.req.param('login');
+    const user = await FirestoreUserService.getUserByLogin(login);
+    if (!user) {
+      return c.json({ error: `Utilisateur avec login ${login} non trouvé` }, 404);
+    }
+    return c.json(user);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de l'utilisateur avec login ${c.req.param('login')} depuis Firebase:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/users/email/:email', async (c) => {
+  try {
+    const email = c.req.param('email');
+    const user = await FirestoreUserService.getUserByEmail(email);
+    if (!user) {
+      return c.json({ error: `Utilisateur avec email ${email} non trouvé` }, 404);
+    }
+    return c.json(user);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération de l'utilisateur avec email ${c.req.param('email')} depuis Firebase:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/usergroups', async (c) => {
+  try {
+    const groups = await FirestoreUserService.getAllGroups();
+    return c.json(groups);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des groupes d\'utilisateurs depuis Firebase:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/usergroups/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const group = await FirestoreUserService.getGroupById(id);
+    if (!group) {
+      return c.json({ error: `Groupe ${id} non trouvé` }, 404);
+    }
+    return c.json(group);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération du groupe ${c.req.param('id')} depuis Firebase:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/users/:id/groups', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const groups = await FirestoreUserService.getUserGroups(id);
+    return c.json(groups);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération des groupes de l'utilisateur ${c.req.param('id')} depuis Firebase:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// ==================== Routes pour les comptes bancaires ====================
+// Routes pour récupérer les comptes bancaires depuis Dolibarr
+app.get('/bankaccounts', async (c) => {
+  try {
+    const params = c.req.query();
+    const bankAccounts = await DolibarrService.getBankAccounts(params);
+    return c.json(bankAccounts);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des comptes bancaires:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/bankaccounts/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const bankAccount = await DolibarrService.getBankAccountById(id);
+    return c.json(bankAccount);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération du compte bancaire ${id}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/bankaccounts/:id/balance', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const balance = await DolibarrService.getBankAccountBalance(id);
+    return c.json(balance);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération du solde du compte bancaire ${id}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/bankaccounts/:id/lines', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const lines = await DolibarrService.getBankAccountLines(id);
+    return c.json(lines);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération des lignes du compte bancaire ${id}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/bankaccounts/:id/lines/:lineId/links', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const lineId = c.req.param('lineId');
+    const links = await DolibarrService.getBankAccountLineLinks(id, lineId);
+    return c.json(links);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération des liens de la ligne ${lineId} du compte bancaire ${id}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Routes pour gérer les comptes bancaires dans Dolibarr
+app.post('/bankaccounts', async (c) => {
+  try {
+    const data = await c.req.json();
+    const result = await SyncService.createAndSyncBankAccount(data);
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la création du compte bancaire:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.put('/bankaccounts/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const data = await c.req.json();
+    const result = await SyncService.updateAndSyncBankAccount(id, data);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la mise à jour du compte bancaire ${id}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.delete('/bankaccounts/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await SyncService.deleteAndSyncBankAccount(id);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la suppression du compte bancaire ${id}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.post('/bankaccounts/:id/lines', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const data = await c.req.json();
+    const result = await SyncService.addAndSyncBankAccountLine(id, data);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de l'ajout d'une ligne au compte bancaire ${id}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.post('/bankaccounts/transfer', async (c) => {
+  try {
+    const data = await c.req.json();
+    const result = await SyncService.createAndSyncBankTransfer(data);
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la création du virement bancaire:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Routes pour la synchronisation des comptes bancaires
+app.get('/sync/bankaccounts', async (c) => {
+  try {
+    const includeLines = c.req.query('lines') === 'true';
+    const result = await SyncService.syncAllBankAccounts(includeLines);
+    return c.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la synchronisation des comptes bancaires:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/sync/bankaccounts/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const includeLines = c.req.query('lines') === 'true';
+    const result = await SyncService.syncBankAccount(id, includeLines);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la synchronisation du compte bancaire ${id}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/sync/bankaccounts/:id/lines', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const result = await SyncService.syncBankAccountWithLines(id);
+    return c.json(result);
+  } catch (error) {
+    console.error(`Erreur lors de la synchronisation des lignes du compte bancaire ${id}:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Routes pour récupérer les comptes bancaires depuis Firebase
+app.get('/firebase/bankaccounts', async (c) => {
+  try {
+    const bankAccounts = await FirestoreBankAccountService.getAllBankAccounts();
+    return c.json(bankAccounts);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des comptes bancaires depuis Firestore:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/bankaccounts/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const bankAccount = await FirestoreBankAccountService.getBankAccountById(id);
+    if (!bankAccount) {
+      return c.json({ error: `Compte bancaire ${id} non trouvé dans Firestore` }, 404);
+    }
+    return c.json(bankAccount);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération du compte bancaire ${id} depuis Firestore:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/firebase/bankaccounts/:id/lines', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const lines = await FirestoreBankAccountService.getBankAccountLines(id);
+    return c.json(lines);
+  } catch (error) {
+    console.error(`Erreur lors de la récupération des lignes du compte bancaire ${id} depuis Firestore:`, error);
+    return c.json({ error: error.message }, 500);
+  }
+});
 
 const handler = handle(app);
 
