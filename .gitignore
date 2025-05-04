@@ -33,5 +33,10 @@ lerna-debug.log*
 /config/*.json
 
 # Documentation sensible
-hono-day.md
-hono-point.md
+#hono-day.md
+#hono-point.md
+
+# Temporary files and test reports
+temp/
+sync_test_report.txt
+cha
